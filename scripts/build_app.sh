@@ -42,6 +42,20 @@ fi
 echo "==> Signing App Bundle..."
 codesign --force --deep --sign - "${APP_BUNDLE}" 2>/dev/null || true
 
+# 5. Build DMG Package (if --dmg flag provided)
+if [ "$1" == "--dmg" ]; then
+    echo "==> Packaging DMG installer..."
+    DMG_PATH="${DIST_DIR}/${APP_NAME}-v1.0.0.dmg"
+    STAGING="/tmp/${APP_NAME}_dmg_staging"
+    rm -rf "${STAGING}"
+    mkdir -p "${STAGING}"
+    cp -R "${APP_BUNDLE}" "${STAGING}/"
+    ln -s /Applications "${STAGING}/Applications"
+    hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGING}" -ov -format UDZO "${DMG_PATH}"
+    rm -rf "${STAGING}"
+    echo "==> DMG installer created at: ${DMG_PATH}"
+fi
+
 echo "==> Build successful! App bundle created at:"
 echo "    ${APP_BUNDLE}"
 echo ""
