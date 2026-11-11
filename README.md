@@ -44,6 +44,17 @@ Or install it to `/Applications`:
 cp -R LiquidClip/dist/LiquidClip.app /Applications/
 ```
 
+### ⚠️ macOS Gatekeeper ("Cannot be opened" / "Unverified Developer")
+
+Because LiquidClip is free open-source software built without an expensive Apple Developer ID certificate ($99/year), macOS Gatekeeper may show a warning upon first launch. You can bypass this in seconds using any of these methods:
+
+- **Method 1 (Recommended)**: In Finder, **Right-click (or Control-click)** `LiquidClip.app` in `/Applications`, choose **Open** from the menu, and click **Open** in the prompt (only needed once).
+- **Method 2**: Go to Mac **System Settings** -> **Privacy & Security**, scroll down to the Security section, and click **Open Anyway**.
+- **Method 3**: Run this one-liner in Terminal to remove the quarantine flag:
+  ```bash
+  xattr -cr /Applications/LiquidClip.app
+  ```
+
 To build from source:
 ```bash
 cd LiquidClip

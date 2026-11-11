@@ -52,6 +52,33 @@ if [ "$1" == "--dmg" ]; then
     mkdir -p "${STAGING}"
     cp -R "${APP_BUNDLE}" "${STAGING}/"
     ln -s /Applications "${STAGING}/Applications"
+
+    # Add quick-unlock helper for Gatekeeper quarantine
+    cat << 'EOF' > "${STAGING}/打不开点我 (解除系统安全拦截).command"
+#!/bin/bash
+clear
+echo "==============================================="
+echo "   LiquidClip macOS 首次打开安全授权工具"
+echo "==============================================="
+echo ""
+TARGET="/Applications/LiquidClip.app"
+if [ ! -d "$TARGET" ]; then
+    echo "⚠️ 未在「应用程序」目录中找到 LiquidClip.app。"
+    echo "👉 请先将本安装包窗口中的 LiquidClip 拖入 Applications 文件夹！"
+    echo ""
+    read -p "按回车键退出..."
+    exit 1
+fi
+
+echo "正在解除 macOS Gatekeeper 安全隔离限制..."
+xattr -cr "$TARGET" 2>/dev/null || true
+echo "✅ 成功解除安全拦截！"
+echo "🚀 正在启动 LiquidClip..."
+open "$TARGET"
+exit 0
+EOF
+    chmod +x "${STAGING}/打不开点我 (解除系统安全拦截).command"
+
     hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGING}" -ov -format UDZO "${DMG_PATH}"
     rm -rf "${STAGING}"
     echo "==> DMG installer created at: ${DMG_PATH}"
