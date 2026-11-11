@@ -164,13 +164,14 @@ public struct MainWindowView: View {
                             emptyStateView
                         } else {
                             ScrollViewReader { proxy in
-                                ScrollView(.vertical, showsIndicators: true) {
+                                ScrollView(.vertical, showsIndicators: false) {
                                     VStack(spacing: 4) {
+                                        let currentId = currentSelectedItem?.id
                                         ForEach(Array(filteredItems.enumerated()), id: \.element.id) { idx, item in
                                             ClipRowView(
                                                 item: item,
                                                 index: idx,
-                                                isSelected: item.id == currentSelectedItem?.id,
+                                                isSelected: item.id == currentId,
                                                 onSelect: {
                                                     selectedItemId = item.id
                                                 },

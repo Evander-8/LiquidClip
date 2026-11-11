@@ -45,7 +45,8 @@ codesign --force --deep --sign - "${APP_BUNDLE}" 2>/dev/null || true
 # 5. Build DMG Package (if --dmg flag provided)
 if [ "$1" == "--dmg" ]; then
     echo "==> Packaging DMG installer..."
-    DMG_PATH="${DIST_DIR}/${APP_NAME}-v1.0.0.dmg"
+    VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "${CONTENTS_DIR}/Info.plist" 2>/dev/null || echo "1.0.1")
+    DMG_PATH="${DIST_DIR}/${APP_NAME}-v${VERSION}.dmg"
     STAGING="/tmp/${APP_NAME}_dmg_staging"
     rm -rf "${STAGING}"
     mkdir -p "${STAGING}"

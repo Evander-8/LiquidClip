@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="README.md">English</a> | <b>简体中文</b>
+</p>
+
 # 💧 LiquidClip (流光剪贴板)
 
 一款专为 macOS 打造的原生液态玻璃质感、极致轻量、高颜值的剪贴板历史管理工具。基于 **Swift 6 + SwiftUI + AppKit** 构建，无任何 Web/Electron 运行时，极致省电、启动仅需 0.02 秒、内存占用仅约 15MB。

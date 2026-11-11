@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "LiquidClip",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
         .executable(name: "LiquidClip", targets: ["LiquidClip"])
@@ -14,7 +14,10 @@ let package = Package(
         .executableTarget(
             name: "LiquidClip",
             dependencies: [],
-            path: "Sources/LiquidClip"
+            path: "Sources/LiquidClip",
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library", "-swift-version", "5"])
+            ]
         )
     ]
 )

@@ -93,8 +93,8 @@ public struct ClipItem: Identifiable, Codable, Hashable {
                 return img
             }
         }
-        // Also check if plainText is an existing image file path
-        if let text = plainText {
+        // Also check if plainText is an existing image file path (must be short single-line path)
+        if let text = plainText, text.count < 1024, !text.contains("\n") {
             let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "file://", with: "")
             if clean.hasPrefix("/") {
@@ -112,9 +112,21 @@ public struct ClipItem: Identifiable, Codable, Hashable {
     public var displayTitle: String {
         switch type {
         case .text:
-            let trimmed = (plainText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let firstLine = trimmed.components(separatedBy: .newlines).first ?? ""
-            return firstLine.isEmpty ? "空白文本" : firstLine
+            guard let text = plainText, !text.isEmpty else { return "空白文本" }
+            var startIdx = text.startIndex
+            while startIdx < text.endIndex && (text[startIdx].isWhitespace || text[startIdx].isNewline) {
+                startIdx = text.index(after: startIdx)
+            }
+            if startIdx == text.endIndex { return "空白文本" }
+            
+            var endIdx = startIdx
+            var count = 0
+            while endIdx < text.endIndex && !text[endIdx].isNewline && count < 200 {
+                endIdx = text.index(after: endIdx)
+                count += 1
+            }
+            let title = String(text[startIdx..<endIdx]).trimmingCharacters(in: .whitespaces)
+            return title.isEmpty ? "空白文本" : title
             
         case .color:
             return colorHex ?? (plainText ?? "未知颜色")
@@ -154,8 +166,9 @@ public struct ClipItem: Identifiable, Codable, Hashable {
     public var previewSnippet: String {
         switch type {
         case .text:
-            guard let text = plainText else { return "" }
-            let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            guard let text = plainText, !text.isEmpty else { return "" }
+            let sample = text.prefix(1000)
+            let lines = sample.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             if lines.count > 1 {
                 return lines.dropFirst().prefix(2).joined(separator: " ").trimmingCharacters(in: .whitespaces)
             }
@@ -226,13 +239,29 @@ public struct ClipItem: Identifiable, Codable, Hashable {
     
     public var lineCount: Int {
         guard let text = plainText, !text.isEmpty else { return 0 }
-        return text.components(separatedBy: .newlines).count
+        var count = 1
+        for scalar in text.unicodeScalars {
+            if scalar == "\n" {
+                count += 1
+            }
+        }
+        return count
     }
     
     public var wordCount: Int {
         guard let text = plainText, !text.isEmpty else { return 0 }
-        let words = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-        return words.count
+        var count = 0
+        var inWord = false
+        let whitespace = CharacterSet.whitespacesAndNewlines
+        for scalar in text.unicodeScalars {
+            if whitespace.contains(scalar) {
+                inWord = false
+            } else if !inWord {
+                count += 1
+                inWord = true
+            }
+        }
+        return count
     }
     
     // Relative human-readable time

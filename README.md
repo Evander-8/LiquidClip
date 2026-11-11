@@ -1,3 +1,7 @@
+<p align="center">
+  <b>English</b> | <a href="README_CN.md">简体中文</a>
+</p>
+
 # 💧 LiquidClip
 
 A lightweight, beautiful macOS clipboard history manager built with native **Liquid Glass (Frosted Acrylic/Vibrancy)** aesthetics. Built with **Swift 6 + SwiftUI + AppKit**, zero Web/Electron runtimes, launching in 0.02s with ~15MB RAM footprint.

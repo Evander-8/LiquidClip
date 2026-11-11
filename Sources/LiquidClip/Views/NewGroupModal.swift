@@ -90,7 +90,7 @@ public struct NewGroupModal: View {
                         .foregroundColor(.secondary.opacity(0.6))
                 }
                 
-                ScrollView(.vertical, showsIndicators: true) {
+                ScrollView(.vertical, showsIndicators: false) {
                     LazyVGrid(
                         columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 7),
                         spacing: 8

@@ -9,6 +9,8 @@ public struct ClipDetailView: View {
     public let onDelete: () -> Void
     
     @State private var copiedNotice: String? = nil
+    @State private var showFullText: Bool = false
+    private let previewCharacterLimit: Int = 50_000
     
     public init(
         item: ClipItem?,
@@ -185,26 +187,32 @@ public struct ClipDetailView: View {
                     .padding(.bottom, 4)
                     
                     // Main Content Inspector
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            if item.type == .image || item.isImageFile || item.loadPrimaryImage() != nil {
-                                imageView(for: item)
-                            } else {
-                                switch item.type {
-                                case .text:
-                                    textView(for: item)
-                                case .image:
+                    if item.type == .text && !item.isImageFile && item.loadPrimaryImage() == nil {
+                        textView(for: item)
+                            .padding(14)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                if item.type == .image || item.isImageFile || item.loadPrimaryImage() != nil {
                                     imageView(for: item)
-                                case .color:
-                                    colorView(for: item)
-                                case .url:
-                                    urlView(for: item)
-                                case .file:
-                                    fileView(for: item)
+                                } else {
+                                    switch item.type {
+                                    case .text:
+                                        textView(for: item)
+                                    case .image:
+                                        imageView(for: item)
+                                    case .color:
+                                        colorView(for: item)
+                                    case .url:
+                                        urlView(for: item)
+                                    case .file:
+                                        fileView(for: item)
+                                    }
                                 }
                             }
+                            .padding(14)
                         }
-                        .padding(14)
                     }
                 }
             } else {
@@ -218,6 +226,9 @@ public struct ClipDetailView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .onChange(of: item?.id) {
+            showFullText = false
         }
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -233,36 +244,63 @@ public struct ClipDetailView: View {
     @ViewBuilder
     private func textView(for item: ClipItem) -> some View {
         let text = item.plainText ?? ""
+        let isOverLimit = text.count > previewCharacterLimit
+        let displayText = (isOverLimit && !showFullText) ? String(text.prefix(previewCharacterLimit)) : text
         
-        // Metrics Bar
-        HStack(spacing: 12) {
-            metricItem(title: "字符数", value: "\(item.charCount)")
-            metricItem(title: "词数", value: "\(item.wordCount)")
-            metricItem(title: "行数", value: "\(item.lineCount)")
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(8)
-        
-        // Text Transformation Bar
-        HStack(spacing: 6) {
-            transformButton("大写", text: text.uppercased())
-            transformButton("小写", text: text.lowercased())
-            transformButton("首字母大写", text: text.capitalized)
-            transformButton("清除空格", text: text.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        
-        // Text Content Display
-        Text(text)
-            .font(.system(size: 12, design: .monospaced))
-            .foregroundColor(.primary)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(10)
-            .background(Color.primary.opacity(0.03))
+        VStack(alignment: .leading, spacing: 10) {
+            // Metrics Bar
+            HStack(spacing: 12) {
+                metricItem(title: "字符数", value: "\(item.charCount)")
+                metricItem(title: "词数", value: "\(item.wordCount)")
+                metricItem(title: "行数", value: "\(item.lineCount)")
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.04))
             .cornerRadius(8)
+            
+            // Text Transformation Bar (lazy evaluation prevents freezing on large text)
+            HStack(spacing: 6) {
+                transformButton("大写") { text.uppercased() }
+                transformButton("小写") { text.lowercased() }
+                transformButton("首字母大写") { text.capitalized }
+                transformButton("清除空格") { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
+            
+            // Large text warning banner if truncated
+            if isOverLimit {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                    Text(showFullText ? "已加载全部内容（共 \(item.charCount) 字符）" : "文本较长，当前已预览前 \(previewCharacterLimit) 字符（共 \(item.charCount) 字符）。「粘贴」或「复制」仍为完整内容。")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    if !showFullText {
+                        Button("显示全部") {
+                            showFullText = true
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.orange.opacity(0.08))
+                .cornerRadius(6)
+            }
+            
+            // Text Content Display using FastTextEditor (NSTextView)
+            FastTextEditor(text: displayText)
+                .padding(6)
+                .background(Color.primary.opacity(0.03))
+                .cornerRadius(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
     
     private func metricItem(title: String, value: String) -> some View {
@@ -276,10 +314,11 @@ public struct ClipDetailView: View {
         }
     }
     
-    private func transformButton(_ title: String, text: String) -> some View {
+    private func transformButton(_ title: String, transform: @escaping () -> String) -> some View {
         Button(action: {
+            let result = transform()
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            NSPasteboard.general.setString(result, forType: .string)
             SoundManager.shared.playCopy()
         }) {
             Text(title)
@@ -584,6 +623,52 @@ public struct ClipDetailView: View {
                         .cornerRadius(6)
                     }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - High-performance NSTextView wrapper for large text inspection
+public struct FastTextEditor: NSViewRepresentable {
+    public let text: String
+
+    public init(text: String) {
+        self.text = text
+    }
+
+    public func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.scrollerStyle = .overlay
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+
+        let textView = NSTextView()
+        textView.layoutManager?.allowsNonContiguousLayout = true
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textColor = NSColor.textColor
+        textView.textContainerInset = NSSize(width: 4, height: 4)
+        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = text
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    public func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        if let tv = scrollView.documentView as? NSTextView {
+            if tv.string != text {
+                tv.string = text
+                tv.scroll(NSPoint.zero)
             }
         }
     }
