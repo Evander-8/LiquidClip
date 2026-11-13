@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ImageIO
 
 @MainActor
 public class StorageManager: ObservableObject {
@@ -15,7 +16,15 @@ public class StorageManager: ObservableObject {
     private let queue = DispatchQueue(label: "com.liquidclip.storage", qos: .utility)
     private var saveWorkItem: DispatchWorkItem?
     
+    // In-memory caching to eliminate redundant disk reads & image decompressions
+    private let imageCache = NSCache<NSString, NSImage>()
+    private let thumbnailCache = NSCache<NSString, NSImage>()
+    
     private init() {
+        imageCache.countLimit = 60
+        imageCache.totalCostLimit = 80 * 1024 * 1024 // 80 MB
+        thumbnailCache.countLimit = 300
+        
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         self.appSupportURL = appSupport.appendingPathComponent("LiquidClip", isDirectory: true)
@@ -209,6 +218,7 @@ public class StorageManager: ObservableObject {
         
         do {
             try pngData.write(to: fileURL)
+            self.imageCache.setObject(image, forKey: fileName as NSString)
             return (fileName, Double(bitmap.pixelsWide), Double(bitmap.pixelsHigh))
         } catch {
             print("Failed to save clipboard image: \(error)")
@@ -217,12 +227,71 @@ public class StorageManager: ObservableObject {
     }
     
     public func loadImage(named fileName: String) -> NSImage? {
+        let key = fileName as NSString
+        if let cached = imageCache.object(forKey: key) {
+            return cached
+        }
         let fileURL = imagesFolderURL.appendingPathComponent(fileName)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return NSImage(contentsOf: fileURL)
+        if let img = NSImage(contentsOf: fileURL) {
+            imageCache.setObject(img, forKey: key)
+            return img
+        }
+        return nil
+    }
+    
+    public func loadImage(fromFilePath path: String) -> NSImage? {
+        let key = "file_\(path)" as NSString
+        if let cached = imageCache.object(forKey: key) {
+            return cached
+        }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        if let img = NSImage(contentsOfFile: path) {
+            imageCache.setObject(img, forKey: key)
+            return img
+        }
+        return nil
+    }
+    
+    // Fast downscaled thumbnail generation directly via ImageIO without full-image decoding
+    public func loadThumbnail(named fileName: String, maxPixelSize: CGFloat = 80) -> NSImage? {
+        let key = "thumb_\(fileName)_\(Int(maxPixelSize))" as NSString
+        if let cached = thumbnailCache.object(forKey: key) {
+            return cached
+        }
+        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
+        return createThumbnail(from: fileURL, cacheKey: key, maxPixelSize: maxPixelSize)
+    }
+    
+    public func loadThumbnail(forFilePath path: String, maxPixelSize: CGFloat = 80) -> NSImage? {
+        let key = "thumb_path_\(path)_\(Int(maxPixelSize))" as NSString
+        if let cached = thumbnailCache.object(forKey: key) {
+            return cached
+        }
+        let fileURL = URL(fileURLWithPath: path)
+        return createThumbnail(from: fileURL, cacheKey: key, maxPixelSize: maxPixelSize)
+    }
+    
+    private func createThumbnail(from fileURL: URL, cacheKey: NSString, maxPixelSize: CGFloat) -> NSImage? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        let thumb = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        thumbnailCache.setObject(thumb, forKey: cacheKey)
+        return thumb
     }
     
     private func deleteImageFile(name: String) {
+        imageCache.removeObject(forKey: name as NSString)
+        thumbnailCache.removeObject(forKey: "thumb_\(name)_80" as NSString)
         let fileURL = imagesFolderURL.appendingPathComponent(name)
         try? FileManager.default.removeItem(at: fileURL)
     }

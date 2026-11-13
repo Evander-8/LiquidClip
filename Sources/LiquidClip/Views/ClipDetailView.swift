@@ -187,31 +187,30 @@ public struct ClipDetailView: View {
                     .padding(.bottom, 4)
                     
                     // Main Content Inspector
-                    if item.type == .text && !item.isImageFile && item.loadPrimaryImage() == nil {
+                    switch item.type {
+                    case .text:
                         textView(for: item)
                             .padding(14)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
+                    case .image:
                         ScrollView(.vertical, showsIndicators: false) {
-                            VStack(alignment: .leading, spacing: 14) {
-                                if item.type == .image || item.isImageFile || item.loadPrimaryImage() != nil {
-                                    imageView(for: item)
-                                } else {
-                                    switch item.type {
-                                    case .text:
-                                        textView(for: item)
-                                    case .image:
-                                        imageView(for: item)
-                                    case .color:
-                                        colorView(for: item)
-                                    case .url:
-                                        urlView(for: item)
-                                    case .file:
-                                        fileView(for: item)
-                                    }
-                                }
-                            }
-                            .padding(14)
+                            imageView(for: item)
+                                .padding(14)
+                        }
+                    case .color:
+                        ScrollView(.vertical, showsIndicators: false) {
+                            colorView(for: item)
+                                .padding(14)
+                        }
+                    case .url:
+                        ScrollView(.vertical, showsIndicators: false) {
+                            urlView(for: item)
+                                .padding(14)
+                        }
+                    case .file:
+                        ScrollView(.vertical, showsIndicators: false) {
+                            fileView(for: item)
+                                .padding(14)
                         }
                     }
                 }
@@ -544,7 +543,7 @@ public struct ClipDetailView: View {
                     let ext = url.pathExtension.lowercased()
                     let isImg = ["png", "jpg", "jpeg", "webp", "gif", "tiff", "tif", "heic", "heif", "svg", "bmp", "ico"].contains(ext)
                     
-                    if isImg, let img = NSImage(contentsOfFile: path) {
+                    if isImg, let img = StorageManager.shared.loadImage(fromFilePath: path) {
                         // Image file preview: Display image, NEVER show path
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {

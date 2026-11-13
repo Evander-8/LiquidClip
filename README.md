@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.1.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.2.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -124,7 +124,7 @@ LiquidClip doesn't just store raw text—it understands what you copy:
 
 ### Option 1: Pre-built DMG Installer (Recommended)
 
-1. Download `LiquidClip-v1.0.1.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
+1. Download `LiquidClip-v1.0.2.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
 2. Double-click the DMG and drag **LiquidClip.app** into your **Applications** folder;
 3. Launch LiquidClip and press <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> to begin.
 

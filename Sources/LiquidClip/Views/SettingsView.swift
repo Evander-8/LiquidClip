@@ -193,7 +193,7 @@ public struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Toggle("划词自动复制 (划选文本即记录)", isOn: $settings.enableSelectionCopy)
                                 .font(.system(size: 13))
-                                .onChange(of: settings.enableSelectionCopy) { _ in
+                                .onChange(of: settings.enableSelectionCopy) {
                                     ClipboardMonitor.shared.setupMouseSelectionMonitor()
                                 }
                             Text("关闭时，忽略终端（如 Ghostty/iTerm）等应用的划选自动抓取，仅在按下 ⌘C 时才记录。")

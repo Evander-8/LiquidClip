@@ -1,7 +1,52 @@
 import SwiftUI
 import AppKit
 
-// Displays macOS application icon from Bundle Identifier
+// MARK: - In-Memory App & File Icon Caches
+// Prevents high-overhead synchronous IPC calls to LaunchServices and IconServices on every view pass
+public final class AppIconCache {
+    public static let shared = AppIconCache()
+    private let cache = NSCache<NSString, NSImage>()
+    
+    private init() {
+        cache.countLimit = 150
+    }
+    
+    public func icon(for bundleId: String?) -> NSImage? {
+        guard let bundleId = bundleId, !bundleId.isEmpty else { return nil }
+        let key = bundleId as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+            let icon = NSWorkspace.shared.icon(forFile: appURL.path)
+            cache.setObject(icon, forKey: key)
+            return icon
+        }
+        return nil
+    }
+}
+
+public final class FileIconCache {
+    public static let shared = FileIconCache()
+    private let cache = NSCache<NSString, NSImage>()
+    
+    private init() {
+        cache.countLimit = 150
+    }
+    
+    public func icon(for path: String) -> NSImage {
+        let ext = (path as NSString).pathExtension.lowercased()
+        let key = (ext.isEmpty ? (path as NSString).lastPathComponent : ext) as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+        let icon = NSWorkspace.shared.icon(forFile: path)
+        cache.setObject(icon, forKey: key)
+        return icon
+    }
+}
+
+// Displays macOS application icon from Bundle Identifier (Instant O(1) Cache)
 public struct AppIconView: View {
     public let bundleId: String?
     public let size: CGFloat
@@ -11,17 +56,9 @@ public struct AppIconView: View {
         self.size = size
     }
     
-    private var appIcon: NSImage? {
-        guard let bundleId = bundleId, !bundleId.isEmpty else { return nil }
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-            return NSWorkspace.shared.icon(forFile: appURL.path)
-        }
-        return nil
-    }
-    
     public var body: some View {
         Group {
-            if let icon = appIcon {
+            if let icon = AppIconCache.shared.icon(for: bundleId) {
                 Image(nsImage: icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)

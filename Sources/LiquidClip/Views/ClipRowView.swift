@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-public struct ClipRowView: View {
+public struct ClipRowView: View, Equatable {
     public let item: ClipItem
     public let index: Int
     public let isSelected: Bool
@@ -12,6 +12,15 @@ public struct ClipRowView: View {
     
     @State private var isHovered = false
     @ObservedObject private var settings = AppSettings.shared
+    
+    public static func == (lhs: ClipRowView, rhs: ClipRowView) -> Bool {
+        lhs.item.id == rhs.item.id &&
+        lhs.item.updatedAt == rhs.item.updatedAt &&
+        lhs.item.isPinned == rhs.item.isPinned &&
+        lhs.item.groupId == rhs.item.groupId &&
+        lhs.index == rhs.index &&
+        lhs.isSelected == rhs.isSelected
+    }
     
     public init(
         item: ClipItem,
@@ -49,8 +58,8 @@ public struct ClipRowView: View {
             ZStack {
                 switch item.type {
                 case .image:
-                    if let img = item.loadPrimaryImage() {
-                        Image(nsImage: img)
+                    if let thumb = item.loadThumbnail() {
+                        Image(nsImage: thumb)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 26, height: 26)
@@ -74,8 +83,8 @@ public struct ClipRowView: View {
                     }
                     
                 case .file:
-                    if item.isImageFile, let img = item.loadPrimaryImage() {
-                        Image(nsImage: img)
+                    if item.isImageFile, let thumb = item.loadThumbnail() {
+                        Image(nsImage: thumb)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 26, height: 26)
@@ -85,7 +94,7 @@ public struct ClipRowView: View {
                                     .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                             )
                     } else if let first = item.filePaths?.first {
-                        Image(nsImage: NSWorkspace.shared.icon(forFile: first))
+                        Image(nsImage: FileIconCache.shared.icon(for: first))
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .frame(width: 22, height: 22)
@@ -94,19 +103,7 @@ public struct ClipRowView: View {
                     }
                     
                 case .text, .url:
-                    if let img = item.loadPrimaryImage() {
-                        Image(nsImage: img)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 26, height: 26)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-                            )
-                    } else {
-                        AppIconView(bundleId: item.sourceAppBundleId, size: 22)
-                    }
+                    AppIconView(bundleId: item.sourceAppBundleId, size: 22)
                 }
             }
             .frame(width: 28, height: 28)

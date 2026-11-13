@@ -23,13 +23,13 @@ public struct MainWindowView: View {
     }
     
     // Filtered items based on search query, category filter and custom group
-    private var filteredItems: [ClipItem] {
+    private func computeFilteredItems(filter: ClipFilter, groupId: UUID?, search: String) -> [ClipItem] {
         var list = storage.items
         
-        if let groupId = selectedGroupId {
-            list = list.filter { $0.groupId == groupId }
+        if let gId = groupId {
+            list = list.filter { $0.groupId == gId }
         } else {
-            switch selectedFilter {
+            switch filter {
             case .all:
                 break
             case .text:
@@ -47,24 +47,35 @@ public struct MainWindowView: View {
             }
         }
         
-        if !searchText.isEmpty {
-            list = list.filter { $0.matches(query: searchText) }
+        if !search.isEmpty {
+            list = list.filter { $0.matches(query: search) }
         }
         
         return list
     }
     
-    // Currently selected item by UUID (immune to index shifts)
-    private var currentSelectedItem: ClipItem? {
-        let items = filteredItems
+    private var filteredItems: [ClipItem] {
+        computeFilteredItems(filter: selectedFilter, groupId: selectedGroupId, search: searchText)
+    }
+    
+    private func currentSelectedItem(in items: [ClipItem]) -> ClipItem? {
         if let id = selectedItemId, let found = items.first(where: { $0.id == id }) {
             return found
         }
         return items.first
     }
     
+    // Currently selected item by UUID (immune to index shifts)
+    private var currentSelectedItem: ClipItem? {
+        currentSelectedItem(in: filteredItems)
+    }
+    
     public var body: some View {
-        ZStack {
+        let currentItems = filteredItems
+        let selectedItem = currentSelectedItem(in: currentItems)
+        let currentId = selectedItem?.id
+        
+        return ZStack {
             // Native Frosted Liquid Glass Background
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, state: .active)
                 .edgesIgnoringSafeArea(.all)
@@ -160,14 +171,13 @@ public struct MainWindowView: View {
                 HStack(spacing: 0) {
                     // Left Column: Clips List
                     VStack(spacing: 0) {
-                        if filteredItems.isEmpty {
+                        if currentItems.isEmpty {
                             emptyStateView
                         } else {
                             ScrollViewReader { proxy in
                                 ScrollView(.vertical, showsIndicators: false) {
-                                    VStack(spacing: 4) {
-                                        let currentId = currentSelectedItem?.id
-                                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { idx, item in
+                                    LazyVStack(spacing: 4) {
+                                        ForEach(Array(currentItems.enumerated()), id: \.element.id) { idx, item in
                                             ClipRowView(
                                                 item: item,
                                                 index: idx,
@@ -185,6 +195,7 @@ public struct MainWindowView: View {
                                                     deleteItem(item: item)
                                                 }
                                             )
+                                            .equatable()
                                             .id(item.id)
                                         }
                                     }
@@ -207,26 +218,26 @@ public struct MainWindowView: View {
                     
                     // Right Column: Liquid Inspector
                     ClipDetailView(
-                        item: currentSelectedItem,
+                        item: selectedItem,
                         onPaste: {
-                            if let item = currentSelectedItem {
+                            if let item = selectedItem {
                                 triggerPaste(item: item)
                             }
                         },
                         onCopy: {
-                            if let item = currentSelectedItem {
+                            if let item = selectedItem {
                                 PasteSimulator.shared.copyToPasteboard(item: item)
                                 SoundManager.shared.playCopy()
                                 showToast("已复制到剪贴板")
                             }
                         },
                         onTogglePin: {
-                            if let item = currentSelectedItem {
+                            if let item = selectedItem {
                                 storage.togglePin(id: item.id)
                             }
                         },
                         onDelete: {
-                            if let item = currentSelectedItem {
+                            if let item = selectedItem {
                                 deleteItem(item: item)
                             }
                         }
@@ -241,7 +252,7 @@ public struct MainWindowView: View {
                 HStack {
                     // Item Count
                     HStack(spacing: 4) {
-                        Text("\(filteredItems.count) 条记录")
+                        Text("\(currentItems.count) 条记录")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.secondary)
                         
@@ -369,11 +380,11 @@ public struct MainWindowView: View {
     private func filterPill(_ filter: ClipFilter) -> some View {
         let isSelected = selectedFilter == filter && selectedGroupId == nil
         Button(action: {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                selectedFilter = filter
-                selectedGroupId = nil
-                selectedItemId = filteredItems.first?.id
-            }
+            selectedFilter = filter
+            selectedGroupId = nil
+            let newItems = computeFilteredItems(filter: filter, groupId: nil, search: searchText)
+            selectedItemId = newItems.first?.id
+            keyboardScrollTarget = newItems.first?.id
         }) {
             HStack(spacing: 4) {
                 Image(systemName: filter.iconName)
@@ -394,6 +405,7 @@ public struct MainWindowView: View {
             )
         }
         .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.15), value: isSelected)
     }
     
     // Group Pill Button
@@ -402,14 +414,11 @@ public struct MainWindowView: View {
         let isSelected = selectedGroupId == group.id
         let count = storage.items.filter { $0.groupId == group.id }.count
         Button(action: {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                if selectedGroupId == group.id {
-                    selectedGroupId = nil
-                } else {
-                    selectedGroupId = group.id
-                }
-                selectedItemId = filteredItems.first?.id
-            }
+            let nextGroupId = (selectedGroupId == group.id) ? nil : group.id
+            selectedGroupId = nextGroupId
+            let newItems = computeFilteredItems(filter: selectedFilter, groupId: nextGroupId, search: searchText)
+            selectedItemId = newItems.first?.id
+            keyboardScrollTarget = newItems.first?.id
         }) {
             HStack(spacing: 4) {
                 Image(systemName: group.icon)
@@ -438,6 +447,7 @@ public struct MainWindowView: View {
             )
         }
         .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.15), value: isSelected)
         .contextMenu {
             Button(role: .destructive, action: {
                 storage.deleteGroup(id: group.id)

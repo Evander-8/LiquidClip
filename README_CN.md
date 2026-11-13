@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.1.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.2.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -124,7 +124,7 @@ LiquidClip 不仅仅记录文字，更能理解你复制的内容：
 
 ### 方式一：下载预编译 DMG 安装包（推荐）
 
-1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.1.dmg`；
+1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.2.dmg`；
 2. 双击打开 DMG，将 **LiquidClip.app** 拖入 **Applications (应用程序)** 文件夹；
 3. 打开应用程序中的 `LiquidClip`，按 <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> 即可开始使用。
 

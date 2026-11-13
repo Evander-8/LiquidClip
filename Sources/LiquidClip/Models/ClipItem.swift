@@ -82,28 +82,26 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         return imageExts.contains(ext)
     }
     
-    // Attempt to load the primary display image
+    // Fast downscaled thumbnail loading for row lists
     @MainActor
-    public func loadPrimaryImage() -> NSImage? {
-        if let name = imageFileName, let img = StorageManager.shared.loadImage(named: name) {
-            return img
+    public func loadThumbnail(maxPixelSize: CGFloat = 80) -> NSImage? {
+        if let name = imageFileName {
+            return StorageManager.shared.loadThumbnail(named: name, maxPixelSize: maxPixelSize)
         }
         if let path = filePaths?.first, isImageFile {
-            if FileManager.default.fileExists(atPath: path), let img = NSImage(contentsOfFile: path) {
-                return img
-            }
+            return StorageManager.shared.loadThumbnail(forFilePath: path, maxPixelSize: maxPixelSize)
         }
-        // Also check if plainText is an existing image file path (must be short single-line path)
-        if let text = plainText, text.count < 1024, !text.contains("\n") {
-            let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "file://", with: "")
-            if clean.hasPrefix("/") {
-                let ext = (clean as NSString).pathExtension.lowercased()
-                let imageExts = ["png", "jpg", "jpeg", "webp", "gif", "tiff", "tif", "heic", "heif", "svg", "bmp"]
-                if imageExts.contains(ext), FileManager.default.fileExists(atPath: clean) {
-                    return NSImage(contentsOfFile: clean)
-                }
-            }
+        return nil
+    }
+    
+    // Attempt to load the primary display image (cached in StorageManager)
+    @MainActor
+    public func loadPrimaryImage() -> NSImage? {
+        if let name = imageFileName {
+            return StorageManager.shared.loadImage(named: name)
+        }
+        if let path = filePaths?.first, isImageFile {
+            return StorageManager.shared.loadImage(fromFilePath: path)
         }
         return nil
     }
@@ -240,10 +238,8 @@ public struct ClipItem: Identifiable, Codable, Hashable {
     public var lineCount: Int {
         guard let text = plainText, !text.isEmpty else { return 0 }
         var count = 1
-        for scalar in text.unicodeScalars {
-            if scalar == "\n" {
-                count += 1
-            }
+        for byte in text.utf8 where byte == 0x0A {
+            count += 1
         }
         return count
     }
@@ -263,6 +259,13 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         }
         return count
     }
+    
+    // Shared reusable date formatter to avoid expensive per-frame instantiation
+    private static let mmDdFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd"
+        return formatter
+    }()
     
     // Relative human-readable time
     public var relativeTime: String {
@@ -285,9 +288,7 @@ public struct ClipItem: Identifiable, Codable, Hashable {
             let days = Int(interval / 86400)
             return "\(days)天前"
         } else {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "MM-dd"
-            return formatter.string(from: createdAt)
+            return Self.mmDdFormatter.string(from: createdAt)
         }
     }
     
