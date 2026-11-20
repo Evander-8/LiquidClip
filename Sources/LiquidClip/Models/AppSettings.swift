@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Carbon
 
 @MainActor
 public class AppSettings: ObservableObject {
@@ -53,6 +54,26 @@ public class AppSettings: ObservableObject {
             }
         }
     }
+
+    /// Privacy mode: history lives in memory only for the session — nothing is
+    /// written to disk (existing files are wiped on enable, save resumes on disable).
+    @Published public var privacyMode: Bool {
+        didSet {
+            guard oldValue != privacyMode else { return }
+            UserDefaults.standard.set(privacyMode, forKey: "privacyMode")
+            StorageManager.shared.applyPrivacyMode(enabled: privacyMode)
+        }
+    }
+
+    /// Global hotkey virtual key code (Carbon), persisted.
+    @Published public var hotkeyKeyCode: UInt32 {
+        didSet { UserDefaults.standard.set(Int(hotkeyKeyCode), forKey: "hotkeyKeyCode") }
+    }
+
+    /// Global hotkey Carbon modifier mask (cmdKey/shiftKey/optionKey/controlKey), persisted.
+    @Published public var hotkeyCarbonModifiers: UInt32 {
+        didSet { UserDefaults.standard.set(Int(hotkeyCarbonModifiers), forKey: "hotkeyCarbonModifiers") }
+    }
     
     private init() {
         let defaults = UserDefaults.standard
@@ -68,10 +89,23 @@ public class AppSettings: ObservableObject {
             "com.agilebits.onepassword7",
             "com.1password.1password",
             "com.bitwarden.desktop",
-            "org.keepassxc.keepassxc",
-            "com.apple.keychainaccess"
+            "org.keepassxc.keepassxc"
         ]
         self.hotkeyDisplay = defaults.string(forKey: "hotkeyDisplay") ?? "⌘ ⇧ V"
         self.launchAtLogin = LoginService.isEnabled
+        self.privacyMode = defaults.bool(forKey: "privacyMode")
+        let savedKeyCode = UInt32(defaults.integer(forKey: "hotkeyKeyCode"))
+        let savedMods = UInt32(defaults.integer(forKey: "hotkeyCarbonModifiers"))
+        // Defaults: ⌘ + ⇧ + V (V = 9, cmdKey | shiftKey)
+        self.hotkeyKeyCode = savedKeyCode > 0 ? savedKeyCode : 9
+        self.hotkeyCarbonModifiers = savedMods > 0 ? savedMods : UInt32(cmdKey | shiftKey)
+    }
+
+    /// Applies a newly recorded hotkey: persists it and re-registers with Carbon.
+    public func setHotkey(keyCode: UInt32, carbonModifiers: UInt32, display: String) {
+        self.hotkeyKeyCode = keyCode
+        self.hotkeyCarbonModifiers = carbonModifiers
+        self.hotkeyDisplay = display
+        HotkeyManager.shared.register(keyCode: keyCode, carbonModifiers: carbonModifiers)
     }
 }

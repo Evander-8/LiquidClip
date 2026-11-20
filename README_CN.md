@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.3.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.4.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -79,14 +79,17 @@ LiquidClip 不仅仅记录文字，更能理解你复制的内容：
 - **极速归档**：右键任意历史记录即可一键移入分组，或在右侧检查器顶部一键切换。
 
 ### ⚡ 4. 全键盘极速工作流
-- **全局呼出**：随时按下 <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> 瞬间呼出（基于底层 Carbon API，零延迟）。
+- **全局呼出**：随时按下 <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> 瞬间呼出（基于底层 Carbon API，零延迟），快捷键支持**自定义录制**，告别冲突。
 - **数字直达粘贴**：前 9 条记录配备 <kbd>1</kbd> ~ <kbd>9</kbd> 快捷角标，无需移鼠标，盲打数字瞬间注入目标输入框！
 - **秒级模糊搜索**：呼出后直接输入关键字，支持对文本内容、来源应用名称、颜色代码、文件名实时过滤。
 - **开机自动启动**：偏好设置内一键开启登录自启（基于 `SMAppService`，自动降级兼容系统登录项），重启 Mac 后随系统静默常驻菜单栏。
 
 ### 🔒 5. 严格隐私与纯本地运行
 - **敏感信息自动过滤**：原生识别 1Password、Bitwarden、KeePassXC、苹果钥匙串等密码管理器的私密保护类型，坚决不记录密码。
-- **零网络、100% 离线**：数据完全保存在本机 `~/Library/Application Support/LiquidClip/`，零遥测、零埋点、零联网权限。
+- **隐私模式**：一键开启后历史仅保留在本次会话内存中，不写入任何磁盘文件；关闭后自动恢复持久化。
+- **新版本提醒**：启动时自动检查 GitHub Releases，发现新版本即在菜单栏菜单顶部提示，一键直达下载页。
+- **数据备份回滚**：历史文件每次保存前自动滚动备份 `.bak`，主文件损坏或跨版本不兼容时自动回退到上一份完好备份。
+- **零网络、100% 离线**：剪贴板数据完全保存在本机 `~/Library/Application Support/LiquidClip/`，唯一一次联网请求为新版本检查（仅读取公开 Release 元数据）。
 
 ---
 
@@ -125,7 +128,7 @@ LiquidClip 不仅仅记录文字，更能理解你复制的内容：
 
 ### 方式一：下载预编译 DMG 安装包（推荐）
 
-1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.3.dmg`；
+1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.4.dmg`；
 2. 双击打开 DMG，将 **LiquidClip.app** 拖入 **Applications (应用程序)** 文件夹；
 3. 打开应用程序中的 `LiquidClip`，按 <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> 即可开始使用。
 

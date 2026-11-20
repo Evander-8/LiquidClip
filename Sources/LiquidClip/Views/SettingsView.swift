@@ -189,6 +189,24 @@ public struct SettingsView: View {
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.secondary)
 
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("全局呼出快捷键")
+                                    .font(.system(size: 13))
+                                Text("在任意应用中按下即可呼出 LiquidClip，需含至少一个修饰键")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Text(settings.hotkeyDisplay)
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.primary.opacity(0.06))
+                                .cornerRadius(6)
+                            HotkeyRecorderView()
+                        }
+
                         Toggle("开机自动启动 LiquidClip", isOn: $settings.launchAtLogin)
                             .font(.system(size: 13))
 
@@ -225,6 +243,15 @@ public struct SettingsView: View {
                         
                         Toggle("忽略密码管理器复制的内容 (1Password / Bitwarden / 钥匙串等)", isOn: $settings.ignorePasswordManagers)
                             .font(.system(size: 13))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Toggle("隐私模式 (历史仅保留在本次会话，不写入磁盘)", isOn: $settings.privacyMode)
+                                .font(.system(size: 13))
+                            Text("开启后立即清空已保存的历史文件，本次会话内的记录仅存在于内存；关闭后自动恢复落盘。")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 18)
+                        }
                     }
                     
                     // About Section with Version & Build
@@ -289,6 +316,8 @@ public struct SettingsView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help("访问 GitHub 开源仓库")
+
+                                UpdateBadgeButton()
                             }
                         }
                         
@@ -329,5 +358,109 @@ public struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
         }
+    }
+}
+
+// MARK: - Hotkey Recorder
+
+/// A compact "录制" button: when recording, a local key monitor captures the next
+/// keydown (with at least one modifier) as the new global hotkey. Esc cancels.
+public struct HotkeyRecorderView: View {
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var isRecording = false
+    @State private var monitor: Any?
+
+    public init() {}
+
+    public var body: some View {
+        Button(isRecording ? "按下新快捷键… (Esc 取消)" : "录制") {
+            if isRecording {
+                stopRecording()
+            } else {
+                startRecording()
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        isRecording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Cancel on Escape
+            if event.keyCode == 53 {
+                stopRecording()
+                return nil
+            }
+            // Pure modifier presses: swallow and keep waiting for the real key
+            let modifierOnlyKeyCodes: Set<UInt16> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+            if modifierOnlyKeyCodes.contains(event.keyCode) {
+                return nil
+            }
+            let carbonMods = HotkeyManager.carbonModifiers(from: event.modifierFlags)
+            guard carbonMods != 0 else {
+                // No modifier → can't be a sane global hotkey; swallow to avoid typing into UI
+                return nil
+            }
+            let keyLabel = HotkeyManager.keyDisplay(forVirtualKey: UInt32(event.keyCode))
+            let display = HotkeyManager.modifierDisplay(from: carbonMods) + " " + keyLabel
+            settings.setHotkey(keyCode: UInt32(event.keyCode), carbonModifiers: carbonMods, display: display)
+            stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        if let monitor = monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+        isRecording = false
+    }
+}
+
+// MARK: - Update Badge Button
+
+/// "检查更新" button; shows the remote version inline when one is available.
+public struct UpdateBadgeButton: View {
+    @ObservedObject private var checker = UpdateChecker.shared
+    @State private var checking = false
+
+    public init() {}
+
+    public var body: some View {
+        Button {
+            if checker.latestVersion != nil, let url = checker.latestReleaseURL {
+                NSWorkspace.shared.open(url)
+            } else {
+                checking = true
+                UpdateChecker.shared.checkForUpdate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { checking = false }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                if checking {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 8))
+                    Text("检查中…")
+                } else if let version = checker.latestVersion {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(.green)
+                    Text("新版本 \(version)")
+                } else {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 8))
+                    Text("检查更新")
+                }
+            }
+            .foregroundColor(checker.latestVersion != nil ? .green : .accentColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2.5)
+            .background((checker.latestVersion != nil ? Color.green : Color.accentColor).opacity(0.1))
+            .cornerRadius(5)
+        }
+        .buttonStyle(.plain)
+        .help(checker.latestVersion != nil ? "前往 GitHub Releases 下载新版本" : "检查 GitHub 上的最新版本")
     }
 }

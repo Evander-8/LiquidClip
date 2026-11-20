@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.3.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.4.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -79,14 +79,17 @@ LiquidClip doesn't just store raw text—it understands what you copy:
 - **Instant Filing**: Right-click any row to archive into a group, or toggle groups directly from the inspector header.
 
 ### ⚡ 4. Keyboard-Driven Workflow
-- **Global Toggle**: Press <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> anywhere to summon the HUD instantaneously (powered by Carbon API, sub-millisecond response).
+- **Global Toggle**: Press <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> anywhere to summon the HUD instantaneously (powered by Carbon API, sub-millisecond response) — fully **re-recordable** in Preferences, no more conflicts.
 - **1-9 Instant Quick Paste**: The top 9 items feature quick numeric badges. Press <kbd>1</kbd> ~ <kbd>9</kbd> to paste directly into your active app without touching the mouse!
 - **Instant Search**: Type immediately to search across content, source app names, colors, and filenames.
 - **Launch at Login**: One-click login-item toggle in Preferences (built on `SMAppService` with automatic fallback to legacy session login items) — LiquidClip quietly reappears in your menu bar after every reboot.
 
 ### 🔒 5. Privacy by Design & 100% Offline
 - **Password Manager Shield**: Automatically ignores sensitive concealed types from 1Password, Bitwarden, KeePassXC, Apple Keychain, etc.
-- **Zero Telemetry**: All data stays purely on your Mac in `~/Library/Application Support/LiquidClip/`. No analytics, no accounts, no cloud sync, 100% offline.
+- **Privacy Mode**: One toggle keeps the entire session history in memory only — nothing is ever written to disk; saving resumes automatically when disabled.
+- **Update Notices**: A single GitHub Releases metadata check at launch surfaces new versions at the top of the menu-bar menu.
+- **Backup & Rollback**: Every save rotates a `.bak` of the previous history file; a corrupt or schema-incompatible primary file automatically falls back to the last good backup.
+- **Zero Telemetry**: All clipboard data stays purely on your Mac in `~/Library/Application Support/LiquidClip/`. The only network call ever made is the update check (public release metadata only).
 
 ---
 
@@ -125,7 +128,7 @@ LiquidClip doesn't just store raw text—it understands what you copy:
 
 ### Option 1: Pre-built DMG Installer (Recommended)
 
-1. Download `LiquidClip-v1.0.3.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
+1. Download `LiquidClip-v1.0.4.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
 2. Double-click the DMG and drag **LiquidClip.app** into your **Applications** folder;
 3. Launch LiquidClip and press <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> to begin.
 

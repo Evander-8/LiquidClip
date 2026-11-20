@@ -37,8 +37,20 @@ public class MenuBarController: NSObject {
     
     private func showContextMenu() {
         let menu = NSMenu()
-        
-        let showItem = NSMenuItem(title: "显示剪贴板 (⌘⇧V)", action: #selector(togglePanel), keyEquivalent: "")
+
+        // Update available: surface it at the very top of the menu.
+        if let version = UpdateChecker.shared.latestVersion {
+            let updateItem = NSMenuItem(
+                title: "🎉 发现新版本 \(version) — 点击更新",
+                action: #selector(openLatestRelease), keyEquivalent: ""
+            )
+            updateItem.target = self
+            menu.addItem(updateItem)
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        let hotkey = AppSettings.shared.hotkeyDisplay
+        let showItem = NSMenuItem(title: "显示剪贴板 (\(hotkey))", action: #selector(togglePanel), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
         
@@ -66,6 +78,12 @@ public class MenuBarController: NSObject {
     @objc private func togglePanel() {
         floatingPanel?.toggleVisibility()
     }
+
+    @objc private func openLatestRelease() {
+        if let url = UpdateChecker.shared.latestReleaseURL {
+            NSWorkspace.shared.open(url)
+        }
+    }
     
     @objc private func clearHistory() {
         StorageManager.shared.clearUnpinned()
@@ -78,7 +96,7 @@ public class MenuBarController: NSObject {
         
         let alert = NSAlert()
         alert.messageText = "LiquidClip 流光剪贴板 v\(version)"
-        alert.informativeText = "版本号: v\(version) (Build \(build))\n\n一款原生液态玻璃质感的轻量 macOS 剪贴板历史管理器。\n\n技术栈: 100% 纯原生 Swift 6 + SwiftUI + AppKit\n内存占用: ~15MB 极度轻量\n全局快捷键: ⌘ + ⇧ + V\n\n开源地址: https://github.com/Evander-8/LiquidClip\n\nCopyright © 2026 LiquidClip. All rights reserved."
+        alert.informativeText = "版本号: v\(version) (Build \(build))\n\n一款原生液态玻璃质感的轻量 macOS 剪贴板历史管理器。\n\n技术栈: 100% 纯原生 Swift 6 + SwiftUI + AppKit\n内存占用: ~15MB 极度轻量\n全局快捷键: \(AppSettings.shared.hotkeyDisplay)\n\n开源地址: https://github.com/Evander-8/LiquidClip\n\nCopyright © 2026 LiquidClip. All rights reserved."
         alert.alertStyle = .informational
         if let icon = NSApp.applicationIconImage {
             alert.icon = icon

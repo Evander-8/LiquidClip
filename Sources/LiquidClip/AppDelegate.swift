@@ -30,11 +30,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         // Start Clipboard Monitoring
         ClipboardMonitor.shared.startMonitoring()
         
-        // Register Global Carbon HotKey (⌘ + ⇧ + V)
+        // Register Global HotKey (user-configurable, defaults to ⌘ + ⇧ + V)
         HotkeyManager.shared.onHotKeyTriggered = { [weak panel] in
             panel?.toggleVisibility()
         }
-        HotkeyManager.shared.registerDefaultHotKey()
+        HotkeyManager.shared.registerFromSettings()
+
+        // One-shot GitHub Releases update check (non-blocking)
+        UpdateChecker.shared.checkForUpdateOnce()
         
         print("LiquidClip launched successfully.")
     }

@@ -44,53 +44,108 @@ public class StorageManager: ObservableObject {
     }
     
     // MARK: - Persistence
-    public func loadItems() {
-        guard FileManager.default.fileExists(atPath: clipsFileURL.path) else {
-            return
-        }
-        do {
-            let data = try Data(contentsOf: clipsFileURL)
-            let decoded = try JSONDecoder().decode([ClipItem].self, from: data)
-            self.items = decoded
-        } catch {
-            print("Failed to load clips: \(error)")
+
+    /// Privacy mode semantics:
+    /// - Enable: wipe persisted history files from disk (in-memory data survives for the session).
+    /// - Disable: immediately persist the current in-memory state again.
+    public func applyPrivacyMode(enabled: Bool) {
+        if enabled {
+            let fm = FileManager.default
+            try? fm.removeItem(at: clipsFileURL)
+            try? fm.removeItem(at: clipsFileURL.appendingPathExtension("bak"))
+            try? fm.removeItem(at: groupsFileURL)
+            try? fm.removeItem(at: groupsFileURL.appendingPathExtension("bak"))
+        } else {
+            scheduleSave()
         }
     }
-    
+
+    public func loadItems() {
+        let backupURL = clipsFileURL.appendingPathExtension("bak")
+        if let decoded = decodeItems(from: clipsFileURL) {
+            self.items = decoded
+        } else if FileManager.default.fileExists(atPath: backupURL.path),
+                  let decoded = decodeItems(from: backupURL) {
+            // Primary file corrupt/incompatible — fall back to last known-good backup and heal.
+            self.items = decoded
+            print("Loaded clips from backup after primary decode failure")
+            scheduleSave()
+        }
+    }
+
+    private func decodeItems(from url: URL) -> [ClipItem]? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode([ClipItem].self, from: data)
+        } catch {
+            print("Failed to decode clips at \(url.lastPathComponent): \(error)")
+            return nil
+        }
+    }
+
     public func loadGroups() {
-        guard FileManager.default.fileExists(atPath: groupsFileURL.path) else {
-            // Default initial groups if empty
+        let backupURL = groupsFileURL.appendingPathExtension("bak")
+        if let decoded = decodeGroups(from: groupsFileURL) {
+            self.groups = decoded
+        } else if FileManager.default.fileExists(atPath: backupURL.path),
+                  let decoded = decodeGroups(from: backupURL) {
+            self.groups = decoded
+            print("Loaded groups from backup after primary decode failure")
+            scheduleSave()
+        } else {
+            // Default initial groups if empty / unreadable
             self.groups = [
                 ClipGroup(name: "常用记录", icon: "bookmark.fill")
             ]
             self.scheduleSave()
-            return
-        }
-        do {
-            let data = try Data(contentsOf: groupsFileURL)
-            let decoded = try JSONDecoder().decode([ClipGroup].self, from: data)
-            self.groups = decoded
-        } catch {
-            print("Failed to load groups: \(error)")
         }
     }
-    
-    // Debounced async save
+
+    private func decodeGroups(from url: URL) -> [ClipGroup]? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode([ClipGroup].self, from: data)
+        } catch {
+            print("Failed to decode groups at \(url.lastPathComponent): \(error)")
+            return nil
+        }
+    }
+
+    // Debounced save: snapshots on the main actor, encodes & writes OFF the main thread
+    // so large histories (500–1000 items with rich text) never hitch the UI.
     public func scheduleSave() {
+        if AppSettings.shared.privacyMode { return }
         saveWorkItem?.cancel()
-        
-        // Encode on main actor
-        guard let clipsData = try? JSONEncoder().encode(self.items),
-              let groupsData = try? JSONEncoder().encode(self.groups) else { return }
+
+        let clipsSnapshot = self.items
+        let groupsSnapshot = self.groups
         let targetClipsURL = self.clipsFileURL
         let targetGroupsURL = self.groupsFileURL
-        
+
         let work = DispatchWorkItem {
-            try? clipsData.write(to: targetClipsURL, options: .atomic)
-            try? groupsData.write(to: targetGroupsURL, options: .atomic)
+            if let clipsData = try? JSONEncoder().encode(clipsSnapshot) {
+                Self.rotateBackup(of: targetClipsURL)
+                try? clipsData.write(to: targetClipsURL, options: .atomic)
+            }
+            if let groupsData = try? JSONEncoder().encode(groupsSnapshot) {
+                Self.rotateBackup(of: targetGroupsURL)
+                try? groupsData.write(to: targetGroupsURL, options: .atomic)
+            }
         }
         saveWorkItem = work
         queue.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Keeps a one-generation `.bak` of the previously persisted file so a corrupt
+    /// or schema-incompatible primary file can be rolled back on next launch.
+    nonisolated private static func rotateBackup(of url: URL) {
+        let fm = FileManager.default
+        let backupURL = url.appendingPathExtension("bak")
+        guard fm.fileExists(atPath: url.path) else { return }
+        try? fm.removeItem(at: backupURL)
+        try? fm.copyItem(at: url, to: backupURL)
     }
     
     // MARK: - Group Management
