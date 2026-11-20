@@ -14,7 +14,7 @@ public class MenuBarController: NSObject {
     
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
+
         if let button = statusItem?.button {
             if let img = NSImage(systemSymbolName: "drop.circle", accessibilityDescription: "LiquidClip") {
                 img.isTemplate = true
@@ -24,6 +24,29 @@ public class MenuBarController: NSObject {
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+
+        // Light up a green badge dot on the status icon when an update is found.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(updateFound(_:)),
+            name: UpdateChecker.updateFoundNotification, object: nil
+        )
+    }
+
+    @objc private func updateFound(_ note: Notification) {
+        guard let button = statusItem?.button else { return }
+        button.wantsLayer = true
+        guard let layer = button.layer else { return }
+
+        let dot = CALayer()
+        dot.name = "updateBadgeDot"
+        dot.frame = CGRect(x: layer.bounds.width - 5, y: 1, width: 7, height: 7)
+        dot.backgroundColor = NSColor.systemGreen.cgColor
+        dot.cornerRadius = 3.5
+        dot.borderColor = NSColor.windowBackgroundColor.cgColor
+        dot.borderWidth = 1
+        // Remove any stale dot before adding (layer width changes with the icon)
+        layer.sublayers?.filter { $0.name == "updateBadgeDot" }.forEach { $0.removeFromSuperlayer() }
+        layer.addSublayer(dot)
     }
     
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {

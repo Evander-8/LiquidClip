@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.4.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.5.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -87,7 +87,7 @@ LiquidClip 不仅仅记录文字，更能理解你复制的内容：
 ### 🔒 5. 严格隐私与纯本地运行
 - **敏感信息自动过滤**：原生识别 1Password、Bitwarden、KeePassXC、苹果钥匙串等密码管理器的私密保护类型，坚决不记录密码。
 - **隐私模式**：一键开启后历史仅保留在本次会话内存中，不写入任何磁盘文件；关闭后自动恢复持久化。
-- **新版本提醒**：启动时自动检查 GitHub Releases，发现新版本即在菜单栏菜单顶部提示，一键直达下载页。
+- **新版本提醒**：启动时自动检查 GitHub Releases，发现新版本即弹窗提醒（每版本仅一次），菜单栏图标亮绿点、主窗口顶部横幅、设置页均可直达下载。
 - **数据备份回滚**：历史文件每次保存前自动滚动备份 `.bak`，主文件损坏或跨版本不兼容时自动回退到上一份完好备份。
 - **零网络、100% 离线**：剪贴板数据完全保存在本机 `~/Library/Application Support/LiquidClip/`，唯一一次联网请求为新版本检查（仅读取公开 Release 元数据）。
 
@@ -128,7 +128,7 @@ LiquidClip 不仅仅记录文字，更能理解你复制的内容：
 
 ### 方式一：下载预编译 DMG 安装包（推荐）
 
-1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.4.dmg`；
+1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.5.dmg`；
 2. 双击打开 DMG，将 **LiquidClip.app** 拖入 **Applications (应用程序)** 文件夹；
 3. 打开应用程序中的 `LiquidClip`，按 <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> 即可开始使用。
 

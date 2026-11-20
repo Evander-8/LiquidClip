@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.4.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.5.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -87,7 +87,7 @@ LiquidClip doesn't just store raw text—it understands what you copy:
 ### 🔒 5. Privacy by Design & 100% Offline
 - **Password Manager Shield**: Automatically ignores sensitive concealed types from 1Password, Bitwarden, KeePassXC, Apple Keychain, etc.
 - **Privacy Mode**: One toggle keeps the entire session history in memory only — nothing is ever written to disk; saving resumes automatically when disabled.
-- **Update Notices**: A single GitHub Releases metadata check at launch surfaces new versions at the top of the menu-bar menu.
+- **Update Notices**: A single GitHub Releases metadata check at launch surfaces new versions via a one-time-per-version dialog, a green badge dot on the menu-bar icon, an in-app banner, and a Settings entry.
 - **Backup & Rollback**: Every save rotates a `.bak` of the previous history file; a corrupt or schema-incompatible primary file automatically falls back to the last good backup.
 - **Zero Telemetry**: All clipboard data stays purely on your Mac in `~/Library/Application Support/LiquidClip/`. The only network call ever made is the update check (public release metadata only).
 
@@ -128,7 +128,7 @@ LiquidClip doesn't just store raw text—it understands what you copy:
 
 ### Option 1: Pre-built DMG Installer (Recommended)
 
-1. Download `LiquidClip-v1.0.4.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
+1. Download `LiquidClip-v1.0.5.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
 2. Double-click the DMG and drag **LiquidClip.app** into your **Applications** folder;
 3. Launch LiquidClip and press <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> to begin.
 

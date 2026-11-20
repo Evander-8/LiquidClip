@@ -4,7 +4,8 @@ import AppKit
 public struct MainWindowView: View {
     @ObservedObject private var storage = StorageManager.shared
     @ObservedObject private var settings = AppSettings.shared
-    
+    @ObservedObject private var updateChecker = UpdateChecker.shared
+
     @State private var searchText: String = ""
     @State private var selectedFilter: ClipFilter = .all
     @State private var selectedGroupId: UUID? = nil
@@ -13,6 +14,7 @@ public struct MainWindowView: View {
     @State private var showSettings: Bool = false
     @State private var showNewGroupModal: Bool = false
     @State private var toastMessage: String? = nil
+    @State private var dismissedUpdateVersion: String? = nil
     
     public var onClose: () -> Void
     public var registerKeyHandler: ((@escaping (NSEvent) -> Bool) -> Void)?
@@ -97,6 +99,36 @@ public struct MainWindowView: View {
             .edgesIgnoringSafeArea(.all)
             
             VStack(spacing: 0) {
+                // MARK: - Update Available Banner
+                if let version = updateChecker.latestVersion, dismissedUpdateVersion != version {
+                    Button {
+                        if let url = updateChecker.latestReleaseURL {
+                            NSWorkspace.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(.green)
+                            Text("发现新版本 \(version) — 点击前往下载")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.green)
+                            Spacer()
+                            Button(action: { dismissedUpdateVersion = version }) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.secondary.opacity(0.7))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 7)
+                        .background(Color.green.opacity(0.10))
+                    }
+                    .buttonStyle(.plain)
+                    .help("前往 GitHub Releases 下载新版本")
+                }
+
                 // MARK: - Top Liquid Search & Filter Bar
                 VStack(spacing: 10) {
                     HStack(spacing: 10) {

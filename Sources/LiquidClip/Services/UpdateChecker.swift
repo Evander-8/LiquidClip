@@ -16,6 +16,10 @@ public class UpdateChecker: ObservableObject {
         URL(string: "https://github.com/\(Self.repoPath)/releases/latest")
     }
 
+    /// Posted (on main) whenever a new version is detected, so UI surfaces
+    /// (status-item badge, banners) can light up. userInfo: ["version": String]
+    public static let updateFoundNotification = Notification.Name("LiquidClipUpdateFound")
+
     private var checked = false
     private init() {}
 
@@ -39,9 +43,36 @@ public class UpdateChecker: ObservableObject {
             Task { @MainActor [weak self] in
                 if Self.isVersion(remote, newerThan: local) {
                     self?.latestVersion = tag
+                    NotificationCenter.default.post(name: Self.updateFoundNotification, object: nil,
+                                                    userInfo: ["version": tag])
+                    self?.presentOneTimeAlert(version: tag, current: local)
                 }
             }
         }.resume()
+    }
+
+    /// Prominent launch alert — shown at most once per remote version (persisted),
+    /// so it stays visible without becoming nagging.
+    private func presentOneTimeAlert(version: String, current: String) {
+        let key = "updateAlertShownFor/\(version)"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+
+        let alert = NSAlert()
+        alert.messageText = "🎉 LiquidClip 发现新版本 \(version)"
+        alert.informativeText = "当前版本 v\(current)。新版本包含性能优化与功能改进，是否前往下载页？"
+        alert.alertStyle = .informational
+        if let icon = NSApp.applicationIconImage {
+            alert.icon = icon
+        }
+        alert.addButton(withTitle: "前往下载")
+        alert.addButton(withTitle: "稍后再说")
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            if let url = latestReleaseURL {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     /// Semantic-ish comparison on dot-separated numeric components ("1.10" > "1.9").
