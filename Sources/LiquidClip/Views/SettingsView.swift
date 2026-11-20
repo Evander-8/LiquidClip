@@ -67,14 +67,16 @@ public struct SettingsView: View {
                             }
                             
                             Spacer()
-                            
+
                             if !isAccessibilityGranted {
+                                Button("修复授权") {
+                                    PasteSimulator.shared.repairAccessibilityTrust()
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .help("系统设置里已开启但仍然未授权时（常见于重新编译后），重置该授权条目并重新弹出授权提示")
+
                                 Button("去授权") {
                                     PasteSimulator.shared.openAccessibilitySettings()
-                                    // Refresh status after slight delay
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                        isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
-                                    }
                                 }
                                 .font(.system(size: 11, weight: .medium))
                             }
@@ -186,7 +188,10 @@ public struct SettingsView: View {
                         Text("快捷操作与反馈")
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.secondary)
-                        
+
+                        Toggle("开机自动启动 LiquidClip", isOn: $settings.launchAtLogin)
+                            .font(.system(size: 13))
+
                         Toggle("选中历史项时自动执行粘贴 (⌘V)", isOn: $settings.autoPasteOnSelect)
                             .font(.system(size: 13))
                         
@@ -314,6 +319,14 @@ public struct SettingsView: View {
                 .stroke(Color.white.opacity(0.18), lineWidth: 1)
         )
         .onAppear {
+            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
+        }
+        // Poll live so a grant made in System Settings flips this UI within a second,
+        // even if the settings window stayed open the whole time.
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
         }
     }

@@ -10,20 +10,32 @@ public class PasteSimulator {
     
     private init() {}
     
-    private var _cachedAccessibility: Bool?
-    
-    // Check whether the app has Accessibility permissions (cached for 0ms check)
+    // Check whether the app has Accessibility permissions.
+    // AXIsProcessTrusted() is a cheap local IPC call — always query live so the UI
+    // reflects a grant made in System Settings immediately (no stale cache).
     public var isAccessibilityTrusted: Bool {
-        if let cached = _cachedAccessibility {
-            return cached
-        }
-        let trusted = AXIsProcessTrusted()
-        _cachedAccessibility = trusted
-        return trusted
+        AXIsProcessTrusted()
     }
-    
-    public func refreshAccessibilityStatus() {
-        _cachedAccessibility = AXIsProcessTrusted()
+
+    // Kept for API compatibility; the status is now queried live.
+    public func refreshAccessibilityStatus() {}
+
+    // Repair a stale TCC grant: ad-hoc signed apps get their Accessibility entry
+    // invalidated after every rebuild (CDHash changes) while the toggle in System
+    // Settings still looks ON. Resetting the entry lets the user re-grant cleanly.
+    public func repairAccessibilityTrust() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.jack.LiquidClip"
+        task.arguments = ["reset", "Accessibility", bundleID]
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            // tccutil reset failed; fall through and just re-prompt.
+        }
+        // Immediately raise the macOS prompt so the user can re-grant in one step.
+        promptForAccessibility()
     }
     
     // Prompt macOS to show the accessibility permission dialog

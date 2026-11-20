@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.2.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/Download-LiquidClip--v1.0.3.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -82,6 +82,7 @@ LiquidClip doesn't just store raw text—it understands what you copy:
 - **Global Toggle**: Press <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> anywhere to summon the HUD instantaneously (powered by Carbon API, sub-millisecond response).
 - **1-9 Instant Quick Paste**: The top 9 items feature quick numeric badges. Press <kbd>1</kbd> ~ <kbd>9</kbd> to paste directly into your active app without touching the mouse!
 - **Instant Search**: Type immediately to search across content, source app names, colors, and filenames.
+- **Launch at Login**: One-click login-item toggle in Preferences (built on `SMAppService` with automatic fallback to legacy session login items) — LiquidClip quietly reappears in your menu bar after every reboot.
 
 ### 🔒 5. Privacy by Design & 100% Offline
 - **Password Manager Shield**: Automatically ignores sensitive concealed types from 1Password, Bitwarden, KeePassXC, Apple Keychain, etc.
@@ -124,7 +125,7 @@ LiquidClip doesn't just store raw text—it understands what you copy:
 
 ### Option 1: Pre-built DMG Installer (Recommended)
 
-1. Download `LiquidClip-v1.0.2.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
+1. Download `LiquidClip-v1.0.3.dmg` from [**GitHub Releases**](https://github.com/Evander-8/LiquidClip/releases/latest);
 2. Double-click the DMG and drag **LiquidClip.app** into your **Applications** folder;
 3. Launch LiquidClip and press <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> to begin.
 
@@ -170,6 +171,8 @@ To build a standalone DMG installer:
 - **Auto-Paste**: When you pick an item, LiquidClip simulates a keypress of <kbd>⌘</kbd> + <kbd>V</kbd> to insert text into your active document or input field.
 - This requires macOS **Accessibility** permission. If not granted, LiquidClip will gracefully copy the content to your pasteboard and remind you to paste manually.
 - Click **⚙️ Settings** -> **Authorize** inside LiquidClip to jump straight to the macOS Settings page.
+- **Live Status Refresh**: The Settings panel checks the permission in real time — the badge flips to ✅ within a second of granting, no app restart needed.
+- **One-Click Trust Repair**: If the toggle is ON in System Settings but LiquidClip still reports unauthorized (typical after a local rebuild, where an ad-hoc signature change invalidates the old TCC grant), click **Repair Trust** in Settings — it resets the stale entry and re-raises the macOS grant prompt in one step.
 
 ---
 

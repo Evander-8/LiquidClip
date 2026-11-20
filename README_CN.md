@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/Evander-8/LiquidClip/releases/latest">
-    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.2.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
+    <img src="https://img.shields.io/badge/立即下载-LiquidClip--v1.0.3.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download DMG" />
   </a>
 </p>
 
@@ -82,6 +82,7 @@ LiquidClip 不仅仅记录文字，更能理解你复制的内容：
 - **全局呼出**：随时按下 <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> 瞬间呼出（基于底层 Carbon API，零延迟）。
 - **数字直达粘贴**：前 9 条记录配备 <kbd>1</kbd> ~ <kbd>9</kbd> 快捷角标，无需移鼠标，盲打数字瞬间注入目标输入框！
 - **秒级模糊搜索**：呼出后直接输入关键字，支持对文本内容、来源应用名称、颜色代码、文件名实时过滤。
+- **开机自动启动**：偏好设置内一键开启登录自启（基于 `SMAppService`，自动降级兼容系统登录项），重启 Mac 后随系统静默常驻菜单栏。
 
 ### 🔒 5. 严格隐私与纯本地运行
 - **敏感信息自动过滤**：原生识别 1Password、Bitwarden、KeePassXC、苹果钥匙串等密码管理器的私密保护类型，坚决不记录密码。
@@ -124,7 +125,7 @@ LiquidClip 不仅仅记录文字，更能理解你复制的内容：
 
 ### 方式一：下载预编译 DMG 安装包（推荐）
 
-1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.2.dmg`；
+1. 前往 [**GitHub Releases 下载页面**](https://github.com/Evander-8/LiquidClip/releases/latest)，下载最新的 `LiquidClip-v1.0.3.dmg`；
 2. 双击打开 DMG，将 **LiquidClip.app** 拖入 **Applications (应用程序)** 文件夹；
 3. 打开应用程序中的 `LiquidClip`，按 <kbd>⌘</kbd> + <kbd>⇧</kbd> + <kbd>V</kbd> 即可开始使用。
 
@@ -166,7 +167,9 @@ open "dist/LiquidClip.app"
 
 - **自动粘贴体验**：选中历史记录后，LiquidClip 会模拟触发按键 <kbd>⌘</kbd> + <kbd>V</kbd> 自动将内容注入到你当前聚焦的软件中。
 - 此特性需要 macOS 的“辅助功能（Accessibility）”权限。首次使用时若未开启，LiquidClip 会先将内容复制到剪贴板，并温和提示你按键粘贴。
-- 你可以随时在主界面右上角点击 **⚙️ 偏好设置** ➔ 点击 **「前往授权」**，即可直接跳转至系统设置勾选授权。
+- 你可以随时在主界面右上角点击 **⚙️ 偏好设置** ➔ 点击 **「去授权」**，即可直接跳转至系统设置勾选授权。
+- **授权状态实时刷新**：偏好设置会实时检测系统授权状态，授权完成后 1 秒内自动变为 ✅ 已授权，无需重启应用。
+- **「修复授权」一键自愈**：若系统设置里已开启但应用仍显示未授权（常见于本地重新编译后，ad-hoc 签名变更导致 TCC 旧授权失效），点击偏好设置中的 **「修复授权」**，将自动重置授权条目并重新弹出系统授权提示。
 
 ---
 

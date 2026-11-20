@@ -40,6 +40,19 @@ public class AppSettings: ObservableObject {
     @Published public var hotkeyDisplay: String {
         didSet { UserDefaults.standard.set(hotkeyDisplay, forKey: "hotkeyDisplay") }
     }
+
+    /// Launch-at-login. Source of truth is the system (SMAppService / login items);
+    /// the UserDefaults key only remembers the user's intent while the system call is pending.
+    @Published public var launchAtLogin: Bool {
+        didSet {
+            guard oldValue != launchAtLogin else { return }
+            let applied = LoginService.setEnabled(launchAtLogin)
+            if !applied {
+                // System rejected it — reflect the real state and stop flip-flopping.
+                launchAtLogin = LoginService.isEnabled
+            }
+        }
+    }
     
     private init() {
         let defaults = UserDefaults.standard
@@ -59,5 +72,6 @@ public class AppSettings: ObservableObject {
             "com.apple.keychainaccess"
         ]
         self.hotkeyDisplay = defaults.string(forKey: "hotkeyDisplay") ?? "⌘ ⇧ V"
+        self.launchAtLogin = LoginService.isEnabled
     }
 }
