@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 SwiftUI 与 AppKit NSWorkspace 图标能力
+ * [OUTPUT]: 提供 AppIconCache、FileIconCache、AppIconView、KeyboardBadge、LiquidSearchBar 与 GlassIconButton 组件
+ * [POS]: 通用液态玻璃基础 UI 组件库，供 MainWindowView、ClipRowView 与 ClipDetailView 复用
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import SwiftUI
 import AppKit
 
@@ -104,10 +111,12 @@ public struct KeyboardBadge: View {
 // Translucent Liquid Search Bar
 public struct LiquidSearchBar: View {
     @Binding public var text: String
+    public var focusTrigger: Int
     @FocusState private var isFocused: Bool
     
-    public init(text: Binding<String>) {
+    public init(text: Binding<String>, focusTrigger: Int = 0) {
         self._text = text
+        self.focusTrigger = focusTrigger
     }
     
     public var body: some View {
@@ -141,6 +150,9 @@ public struct LiquidSearchBar: View {
                 .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
         )
         .onAppear {
+            isFocused = true
+        }
+        .onChange(of: focusTrigger) {
             isFocused = true
         }
     }

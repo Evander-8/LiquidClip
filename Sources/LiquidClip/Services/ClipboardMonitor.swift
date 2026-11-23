@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 NSPasteboard、NSWorkspace、AppSettings、PasteSimulator 与 StorageManager 异步入库接口
+ * [OUTPUT]: 提供全局单例 ClipboardMonitor，监听系统剪贴板变化与划词复制，过滤隐私/排除应用并分类入库
+ * [POS]: 剪贴板采集引擎，在后台持续运行并将标准化的 ClipItem 或异步图像任务交付 StorageManager
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import Foundation
 import AppKit
 
@@ -28,13 +35,15 @@ public class ClipboardMonitor {
     
     public func startMonitoring() {
         self.lastChangeCount = pasteboard.changeCount
-        // Poll every 0.3 seconds on main runloop
-        timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+        // Poll every 0.4 seconds with tolerance to allow macOS timer coalescing
+        let pollTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.checkPasteboard()
             }
         }
-        RunLoop.current.add(timer!, forMode: .common)
+        pollTimer.tolerance = 0.1
+        self.timer = pollTimer
+        RunLoop.current.add(pollTimer, forMode: .common)
         
         // Track global Command+C keydown to distinguish explicit copy vs automatic copy-on-select
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -176,23 +185,17 @@ public class ClipboardMonitor {
         ]) as? [URL], !urls.isEmpty {
             let paths = urls.map { $0.path }
             
-            // If it is a single image file (common in WeChat, Finder, etc.), save as .image
+            // If it is a single image file (common in WeChat, Finder, etc.), ingest asynchronously as .image
             let imageExtensions = ["png", "jpg", "jpeg", "webp", "gif", "tiff", "tif", "heic", "heif", "svg", "bmp"]
             if paths.count == 1,
                let first = paths.first,
-               imageExtensions.contains((first as NSString).pathExtension.lowercased()),
-               let img = NSImage(contentsOfFile: first),
-               let saved = StorageManager.shared.saveImage(img) {
-                let item = ClipItem(
-                    type: .image,
-                    imageFileName: saved.fileName,
-                    imageWidth: saved.width,
-                    imageHeight: saved.height,
-                    filePaths: paths,
+               imageExtensions.contains((first as NSString).pathExtension.lowercased()) {
+                StorageManager.shared.ingestImageFileAsync(
+                    path: first,
+                    paths: paths,
                     sourceAppName: sourceAppName,
-                    sourceAppBundleId: sourceBundleId
+                    sourceBundleId: sourceBundleId
                 )
-                StorageManager.shared.addClip(item)
                 return
             }
             
@@ -206,23 +209,20 @@ public class ClipboardMonitor {
             return
         }
         
-        // 2. Check for Images
+        // 2. Check for Images (read raw Data on main, decode/hash/write on background queue)
         if let types = pasteboard.types,
-           types.contains(.png) || types.contains(.tiff),
-           let img = NSImage(pasteboard: pasteboard) {
-            if img.size.width > 2 && img.size.height > 2 {
-                if let saved = StorageManager.shared.saveImage(img) {
-                    let item = ClipItem(
-                        type: .image,
-                        imageFileName: saved.fileName,
-                        imageWidth: saved.width,
-                        imageHeight: saved.height,
-                        sourceAppName: sourceAppName,
-                        sourceAppBundleId: sourceBundleId
-                    )
-                    StorageManager.shared.addClip(item)
-                    return
-                }
+           types.contains(.png) || types.contains(.tiff) {
+            let rawPNG = pasteboard.data(forType: .png)
+            let rawTIFF = rawPNG == nil ? pasteboard.data(forType: .tiff) : nil
+            if rawPNG != nil || rawTIFF != nil {
+                StorageManager.shared.ingestImageDataAsync(
+                    rawPNG: rawPNG,
+                    rawTIFF: rawTIFF,
+                    filePaths: nil,
+                    sourceAppName: sourceAppName,
+                    sourceBundleId: sourceBundleId
+                )
+                return
             }
         }
         

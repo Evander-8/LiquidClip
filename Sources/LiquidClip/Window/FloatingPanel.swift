@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 AppKit NSPanel、AppSettings 屏幕跟随配置与 PasteSimulator 前台应用记录
+ * [OUTPUT]: 提供非激活式浮动面板 FloatingPanel，负责多屏幕定位、键盘事件拦截、显隐动效与失焦自动隐藏
+ * [POS]: 承载主界面的唯一顶层窗口容器，连接 AppDelegate 与 MainWindowView
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import Foundation
 import AppKit
 import SwiftUI
@@ -136,11 +143,16 @@ public class FloatingPanel: NSPanel {
         hideImmediately()
     }
     
-    // Position window in the center of the active screen (or mouse screen)
+    // Position window in the center of the cursor screen or main screen based on settings
     private func positionWindow() {
-        let mouseLocation = NSEvent.mouseLocation
         let screens = NSScreen.screens
-        let targetScreen = screens.first { NSMouseInRect(mouseLocation, $0.frame, false) } ?? NSScreen.main ?? screens.first
+        let targetScreen: NSScreen?
+        if AppSettings.shared.windowFollowsCursor {
+            let mouseLocation = NSEvent.mouseLocation
+            targetScreen = screens.first { NSMouseInRect(mouseLocation, $0.frame, false) } ?? NSScreen.main ?? screens.first
+        } else {
+            targetScreen = NSScreen.main ?? screens.first
+        }
         
         guard let screen = targetScreen else { return }
         

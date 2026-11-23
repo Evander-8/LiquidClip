@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 ClipItem、StorageManager、ClipboardMonitor、SoundManager 与 FastTextEditor
+ * [OUTPUT]: 提供右侧内容检查器 ClipDetailView 及异步大图预览与后台 PNG 导出能力
+ * [POS]: 剪贴板详情与快速操作面板，响应 MainWindowView 选中的当前记录
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import SwiftUI
 import AppKit
 
@@ -7,8 +14,8 @@ public struct ClipDetailView: View {
     public let onCopy: () -> Void
     public let onTogglePin: () -> Void
     public let onDelete: () -> Void
+    public var onShowToast: ((String) -> Void)?
     
-    @State private var copiedNotice: String? = nil
     @State private var showFullText: Bool = false
     private let previewCharacterLimit: Int = 50_000
     
@@ -17,13 +24,15 @@ public struct ClipDetailView: View {
         onPaste: @escaping () -> Void,
         onCopy: @escaping () -> Void,
         onTogglePin: @escaping () -> Void,
-        onDelete: @escaping () -> Void
+        onDelete: @escaping () -> Void,
+        onShowToast: ((String) -> Void)? = nil
     ) {
         self.item = item
         self.onPaste = onPaste
         self.onCopy = onCopy
         self.onTogglePin = onTogglePin
         self.onDelete = onDelete
+        self.onShowToast = onShowToast
     }
     
     public var body: some View {
@@ -313,12 +322,20 @@ public struct ClipDetailView: View {
         }
     }
     
+    private func copyTransformedText(_ text: String, notice: String) {
+        ClipboardMonitor.shared.isSelfCopying = true
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        ClipboardMonitor.shared.syncChangeCount()
+        SoundManager.shared.playCopy()
+        onShowToast?(notice)
+    }
+    
     private func transformButton(_ title: String, transform: @escaping () -> String) -> some View {
         Button(action: {
             let result = transform()
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(result, forType: .string)
-            SoundManager.shared.playCopy()
+            copyTransformedText(result, notice: "已复制「\(title)」结果")
         }) {
             Text(title)
                 .font(.system(size: 10, weight: .medium))
@@ -334,104 +351,34 @@ public struct ClipDetailView: View {
     // MARK: - Image Inspector (Displays crisp image preview, NEVER shows raw file path)
     @ViewBuilder
     private func imageView(for item: ClipItem) -> some View {
-        if let img = item.loadPrimaryImage() {
-            let width = item.imageWidth ?? Double(img.size.width)
-            let height = item.imageHeight ?? Double(img.size.height)
-            
-            VStack(alignment: .leading, spacing: 12) {
-                // Image Header: Resolution & Format (No ugly file path)
-                HStack(spacing: 8) {
-                    Image(systemName: "photo.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.purple)
-                    
-                    Text("分辨率: \(Int(width)) × \(Int(height)) 像素")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.primary)
-                    
-                    if let first = item.filePaths?.first {
-                        let ext = (first as NSString).pathExtension.uppercased()
-                        if !ext.isEmpty {
-                            Text(ext)
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.purple)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.purple.opacity(0.12))
-                                .cornerRadius(4)
-                        }
-                    }
-                    
-                    Spacer()
-                }
-                
-                // Image display container
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.black.opacity(0.08))
-                    
-                    Image(nsImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: 310)
-                        .cornerRadius(8)
-                        .shadow(color: Color.black.opacity(0.15), radius: 6, y: 3)
-                }
-                .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 320)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
-                )
-                
-                // Export & Finder Actions
-                HStack(spacing: 8) {
-                    Button(action: {
-                        exportImage(img)
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.system(size: 11))
-                            Text("保存到下载文件夹")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.primary.opacity(0.06))
-                        .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                    
-                    if let path = item.filePaths?.first, FileManager.default.fileExists(atPath: path) {
-                        Button(action: {
-                            let url = URL(fileURLWithPath: path)
-                            NSWorkspace.shared.activateFileViewerSelecting([url])
-                        }) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 11))
-                                Text("在访达中定位")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.primary.opacity(0.06))
-                            .cornerRadius(6)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+        AsyncDetailImageContainer(
+            item: item,
+            onExport: { img in
+                exportImage(img)
             }
-        }
+        )
     }
     
     private func exportImage(_ image: NSImage) {
+        guard let tiffData = image.tiffRepresentation else { return }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
         let target = downloads.appendingPathComponent("LiquidClip_\(Int(Date().timeIntervalSince1970)).png")
-        if let tiff = image.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
-            try? png.write(to: target)
-            NSWorkspace.shared.activateFileViewerSelecting([target])
+        let toastCallback = onShowToast
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let rep = NSBitmapImageRep(data: tiffData),
+                  let png = rep.representation(using: .png, properties: [:]) else {
+                return
+            }
+            do {
+                try png.write(to: target, options: .atomic)
+                DispatchQueue.main.async {
+                    NSWorkspace.shared.activateFileViewerSelecting([target])
+                    toastCallback?("已保存到下载文件夹")
+                }
+            } catch {
+                print("Failed to export image: \(error)")
+            }
         }
     }
     
@@ -439,8 +386,8 @@ public struct ClipDetailView: View {
     @ViewBuilder
     private func colorView(for item: ClipItem) -> some View {
         if let hex = item.colorHex {
-            let (r, g, b) = ClipItem.hexToRGB(hex)
-            let color = Color(red: Double(r)/255.0, green: Double(g)/255.0, blue: Double(b)/255.0)
+            let (r, g, b, a) = ClipItem.hexToRGBA(hex)
+            let color = Color(red: Double(r)/255.0, green: Double(g)/255.0, blue: Double(b)/255.0, opacity: a)
             
             VStack(spacing: 14) {
                 // Large color disc / card
@@ -457,7 +404,12 @@ public struct ClipDetailView: View {
                 VStack(spacing: 6) {
                     colorCopyRow(label: "HEX", value: hex)
                     colorCopyRow(label: "RGB", value: "rgb(\(r), \(g), \(b))")
-                    colorCopyRow(label: "SwiftUI", value: "Color(red: \(String(format: "%.2f", Double(r)/255)), green: \(String(format: "%.2f", Double(g)/255)), blue: \(String(format: "%.2f", Double(b)/255)))")
+                    if a < 1.0 {
+                        colorCopyRow(label: "RGBA", value: String(format: "rgba(%d, %d, %d, %.2f)", r, g, b, a))
+                        colorCopyRow(label: "SwiftUI", value: String(format: "Color(red: %.2f, green: %.2f, blue: %.2f, opacity: %.2f)", Double(r)/255, Double(g)/255, Double(b)/255, a))
+                    } else {
+                        colorCopyRow(label: "SwiftUI", value: "Color(red: \(String(format: "%.2f", Double(r)/255)), green: \(String(format: "%.2f", Double(g)/255)), blue: \(String(format: "%.2f", Double(b)/255)))")
+                    }
                 }
             }
         }
@@ -478,9 +430,7 @@ public struct ClipDetailView: View {
             Spacer()
             
             Button(action: {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(value, forType: .string)
-                SoundManager.shared.playCopy()
+                copyTransformedText(value, notice: "已复制 \(label): \(value)")
             }) {
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: 10))
@@ -543,49 +493,8 @@ public struct ClipDetailView: View {
                     let ext = url.pathExtension.lowercased()
                     let isImg = ["png", "jpg", "jpeg", "webp", "gif", "tiff", "tif", "heic", "heif", "svg", "bmp", "ico"].contains(ext)
                     
-                    if isImg, let img = StorageManager.shared.loadImage(fromFilePath: path) {
-                        // Image file preview: Display image, NEVER show path
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(url.lastPathComponent)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .lineLimit(1)
-                                Spacer()
-                                Text("\(Int(img.size.width)) × \(Int(img.size.height))")
-                                    .font(.system(size: 11, design: .rounded))
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Image(nsImage: img)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(maxHeight: 280)
-                                .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-                                )
-                            
-                            HStack {
-                                Button(action: {
-                                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                                }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "folder")
-                                        Text("在访达中定位")
-                                    }
-                                    .font(.system(size: 11))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.primary.opacity(0.06))
-                                    .cornerRadius(6)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(10)
-                        .background(Color.primary.opacity(0.04))
-                        .cornerRadius(8)
+                    if isImg {
+                        AsyncFileImageCard(path: path)
                     } else {
                         // Non-image file: Shows filename & location info (never dumps raw path)
                         HStack(spacing: 8) {
@@ -668,6 +577,216 @@ public struct FastTextEditor: NSViewRepresentable {
             if tv.string != text {
                 tv.string = text
                 tv.scroll(NSPoint.zero)
+            }
+        }
+    }
+}
+
+// MARK: - Async Image Inspector Containers
+
+private struct AsyncDetailImageContainer: View {
+    let item: ClipItem
+    let onExport: (NSImage) -> Void
+    @State private var image: NSImage?
+    @State private var isLoading: Bool = false
+    
+    init(item: ClipItem, onExport: @escaping (NSImage) -> Void) {
+        self.item = item
+        self.onExport = onExport
+        _image = State(initialValue: item.cachedPrimaryImage())
+    }
+    
+    var body: some View {
+        let resolvedImage = image ?? item.cachedPrimaryImage()
+        let width = item.imageWidth ?? Double(resolvedImage?.size.width ?? 0)
+        let height = item.imageHeight ?? Double(resolvedImage?.size.height ?? 0)
+        
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "photo.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(.purple)
+                
+                if width > 0 && height > 0 {
+                    Text("分辨率: \(Int(width)) × \(Int(height)) 像素")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.primary)
+                } else {
+                    Text("剪贴板图片")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.primary)
+                }
+                
+                if let first = item.filePaths?.first {
+                    let ext = (first as NSString).pathExtension.uppercased()
+                    if !ext.isEmpty {
+                        Text(ext)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.purple)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.12))
+                            .cornerRadius(4)
+                    }
+                }
+                
+                Spacer()
+            }
+            
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.black.opacity(0.08))
+                
+                if let img = resolvedImage {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: 310)
+                        .cornerRadius(8)
+                        .shadow(color: Color.black.opacity(0.15), radius: 6, y: 3)
+                } else if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 24))
+                            .foregroundColor(.secondary.opacity(0.5))
+                        Text("无法加载图片")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 320)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            )
+            
+            HStack(spacing: 8) {
+                if let img = resolvedImage {
+                    Button(action: {
+                        onExport(img)
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.system(size: 11))
+                            Text("保存到下载文件夹")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.primary.opacity(0.06))
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                if let path = item.filePaths?.first, FileManager.default.fileExists(atPath: path) {
+                    FinderRevealButton(url: URL(fileURLWithPath: path))
+                }
+            }
+        }
+        .task(id: item.id) {
+            if let cached = item.cachedPrimaryImage() {
+                image = cached
+                isLoading = false
+                return
+            }
+            image = nil
+            isLoading = true
+            let loaded = await item.loadPrimaryImageAsync()
+            if !Task.isCancelled {
+                image = loaded
+                isLoading = false
+            }
+        }
+    }
+}
+
+private struct FinderRevealButton: View {
+    let url: URL
+    var compact: Bool = false
+    
+    var body: some View {
+        Button(action: {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }) {
+            HStack(spacing: compact ? 4 : 5) {
+                Image(systemName: "folder")
+                    .font(.system(size: 11))
+                Text("在访达中定位")
+                    .font(.system(size: 11, weight: compact ? .regular : .medium))
+            }
+            .padding(.horizontal, compact ? 8 : 10)
+            .padding(.vertical, compact ? 4 : 6)
+            .background(Color.primary.opacity(0.06))
+            .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct AsyncFileImageCard: View {
+    let path: String
+    @State private var image: NSImage?
+    
+    init(path: String) {
+        self.path = path
+        _image = State(initialValue: StorageManager.shared.cachedImage(fromFilePath: path))
+    }
+    
+    var body: some View {
+        let url = URL(fileURLWithPath: path)
+        let resolvedImage = image ?? StorageManager.shared.cachedImage(fromFilePath: path)
+        
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(url.lastPathComponent)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                Spacer()
+                if let img = resolvedImage {
+                    Text("\(Int(img.size.width)) × \(Int(img.size.height))")
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            if let img = resolvedImage {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 280)
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.black.opacity(0.06))
+                        .frame(height: 160)
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            
+            HStack {
+                FinderRevealButton(url: url, compact: true)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.04))
+        .cornerRadius(8)
+        .task(id: path) {
+            if let cached = StorageManager.shared.cachedImage(fromFilePath: path) {
+                image = cached
+                return
+            }
+            image = nil
+            let loaded = await StorageManager.shared.loadImageAsync(fromFilePath: path)
+            if !Task.isCancelled {
+                image = loaded
             }
         }
     }

@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 ClipItem、ClipGroup、StorageManager 与 GlassComponents（AppIconView / FileIconCache / KeyboardBadge）
+ * [OUTPUT]: 提供遵循 Equatable 的列表行视图 ClipRowView，支持异步缩略图加载与快捷操作按钮
+ * [POS]: 左侧历史列表的单行渲染单元，由 MainWindowView 批量实例化
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import SwiftUI
 import AppKit
 
@@ -5,13 +12,15 @@ public struct ClipRowView: View, Equatable {
     public let item: ClipItem
     public let index: Int
     public let isSelected: Bool
+    public let showShortcuts: Bool
+    public let group: ClipGroup?
+    public let refreshTick: Int
     public let onSelect: () -> Void
     public let onPaste: () -> Void
     public let onTogglePin: () -> Void
     public let onDelete: () -> Void
     
     @State private var isHovered = false
-    @ObservedObject private var settings = AppSettings.shared
     
     public static func == (lhs: ClipRowView, rhs: ClipRowView) -> Bool {
         lhs.item.id == rhs.item.id &&
@@ -19,13 +28,20 @@ public struct ClipRowView: View, Equatable {
         lhs.item.isPinned == rhs.item.isPinned &&
         lhs.item.groupId == rhs.item.groupId &&
         lhs.index == rhs.index &&
-        lhs.isSelected == rhs.isSelected
+        lhs.isSelected == rhs.isSelected &&
+        lhs.showShortcuts == rhs.showShortcuts &&
+        lhs.group?.name == rhs.group?.name &&
+        lhs.group?.icon == rhs.group?.icon &&
+        lhs.refreshTick == rhs.refreshTick
     }
     
     public init(
         item: ClipItem,
         index: Int,
         isSelected: Bool,
+        showShortcuts: Bool = true,
+        group: ClipGroup? = nil,
+        refreshTick: Int = 0,
         onSelect: @escaping () -> Void,
         onPaste: @escaping () -> Void,
         onTogglePin: @escaping () -> Void,
@@ -34,6 +50,9 @@ public struct ClipRowView: View, Equatable {
         self.item = item
         self.index = index
         self.isSelected = isSelected
+        self.showShortcuts = showShortcuts
+        self.group = group
+        self.refreshTick = refreshTick
         self.onSelect = onSelect
         self.onPaste = onPaste
         self.onTogglePin = onTogglePin
@@ -44,7 +63,7 @@ public struct ClipRowView: View, Equatable {
         HStack(alignment: .center, spacing: 8) {
             // Index Shortcut Badge or Type Icon (Fixed 20pt width)
             ZStack {
-                if settings.showShortcutsInList && index < 9 {
+                if showShortcuts && index < 9 {
                     KeyboardBadge("\(index + 1)", isHighlighted: isSelected)
                 } else {
                     Image(systemName: item.type.iconName)
@@ -58,41 +77,21 @@ public struct ClipRowView: View, Equatable {
             ZStack {
                 switch item.type {
                 case .image:
-                    if let thumb = item.loadThumbnail() {
-                        Image(nsImage: thumb)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 26, height: 26)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-                            )
-                    } else {
-                        AppIconView(bundleId: item.sourceAppBundleId, size: 22)
-                    }
+                    AsyncThumbnailView(item: item)
                     
                 case .color:
                     if let hex = item.colorHex {
-                        let (r, g, b) = ClipItem.hexToRGB(hex)
+                        let (r, g, b, a) = ClipItem.hexToRGBA(hex)
                         Circle()
-                            .fill(Color(red: Double(r)/255.0, green: Double(g)/255.0, blue: Double(b)/255.0))
+                            .fill(Color(red: Double(r)/255.0, green: Double(g)/255.0, blue: Double(b)/255.0, opacity: a))
                             .frame(width: 20, height: 20)
                             .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1))
                             .shadow(color: Color.black.opacity(0.15), radius: 2)
                     }
                     
                 case .file:
-                    if item.isImageFile, let thumb = item.loadThumbnail() {
-                        Image(nsImage: thumb)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 26, height: 26)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-                            )
+                    if item.isImageFile {
+                        AsyncThumbnailView(item: item)
                     } else if let first = item.filePaths?.first {
                         Image(nsImage: FileIconCache.shared.icon(for: first))
                             .resizable()
@@ -138,7 +137,7 @@ public struct ClipRowView: View, Equatable {
                     }
                     
                     // Group Badge (if assigned)
-                    if let group = StorageManager.shared.group(for: item.groupId) {
+                    if let group = group {
                         HStack(spacing: 2) {
                             Image(systemName: group.icon)
                                 .font(.system(size: 7))
@@ -258,6 +257,49 @@ public struct ClipRowView: View, Equatable {
             Divider()
             Button(role: .destructive, action: onDelete) {
                 Label("删除此项", systemImage: "trash")
+            }
+        }
+    }
+}
+
+private struct AsyncThumbnailView: View {
+    let item: ClipItem
+    @State private var thumbnail: NSImage?
+    
+    init(item: ClipItem) {
+        self.item = item
+        _thumbnail = State(initialValue: item.cachedThumbnail())
+    }
+    
+    private var taskKey: String {
+        "\(item.id.uuidString)_\(item.imageFileName ?? "")_\(item.filePaths?.first ?? "")"
+    }
+    
+    var body: some View {
+        Group {
+            if let thumb = thumbnail ?? item.cachedThumbnail() {
+                Image(nsImage: thumb)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 26, height: 26)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                    )
+            } else {
+                AppIconView(bundleId: item.sourceAppBundleId, size: 22)
+            }
+        }
+        .task(id: taskKey) {
+            if let cached = item.cachedThumbnail() {
+                thumbnail = cached
+                return
+            }
+            thumbnail = nil
+            let loaded = await item.loadThumbnailAsync()
+            if !Task.isCancelled {
+                thumbnail = loaded
             }
         }
     }

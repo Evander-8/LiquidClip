@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 AppKit、CoreGraphics、ClipItem、AppSettings、ClipboardMonitor 与 SoundManager
+ * [OUTPUT]: 提供全局单例 PasteSimulator，负责写入系统剪贴板、模拟 ⌘V 自动粘贴及辅助功能权限检测/修复
+ * [POS]: 剪贴板输出执行器，被 FloatingPanel、MainWindowView 与 SettingsView 调用
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import Foundation
 import AppKit
 import CoreGraphics
@@ -103,9 +110,13 @@ public class PasteSimulator {
         ClipboardMonitor.shared.syncChangeCount()
     }
     
-    // Perform paste action
+    // Perform paste action. Returns false when auto-paste is enabled but Accessibility is missing.
     @discardableResult
     public func paste(item: ClipItem, closeAction: () -> Void) -> Bool {
+        let shouldAutoPaste = AppSettings.shared.autoPasteOnSelect
+        let hasAccessibility = self.isAccessibilityTrusted
+        let needsAccessibility = shouldAutoPaste && !hasAccessibility
+        
         // 1. Instantly hide window FIRST (0ms latency, vanishes on the exact click frame!)
         closeAction()
         
@@ -117,7 +128,6 @@ public class PasteSimulator {
             
             self.copyToPasteboard(item: item)
             
-            let shouldAutoPaste = AppSettings.shared.autoPasteOnSelect
             guard shouldAutoPaste else {
                 SoundManager.shared.playCopy()
                 return
@@ -125,7 +135,7 @@ public class PasteSimulator {
             
             let targetApp = self.previousApp
             
-            // Reactivate target app
+            // Reactivate target app (even without Accessibility so the user can press ⌘V immediately)
             if let target = targetApp, !target.isTerminated {
                 if #available(macOS 14.0, *) {
                     target.activate()
@@ -134,17 +144,18 @@ public class PasteSimulator {
                 }
             }
             
-            SoundManager.shared.playPaste()
-            
             // Simulate Command+V with minimal delay (35ms) after target app gains focus
-            if self.isAccessibilityTrusted {
+            if hasAccessibility {
+                SoundManager.shared.playPaste()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) {
                     self.simulateCommandV()
                 }
+            } else {
+                SoundManager.shared.playCopy()
             }
         }
         
-        return true
+        return !needsAccessibility
     }
     
     private func simulateCommandV() {

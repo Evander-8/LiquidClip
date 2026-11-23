@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 UserDefaults、LoginService 与 StorageManager 的历史裁剪能力
+ * [OUTPUT]: 提供全局单例 AppSettings，管理并持久化快捷键、历史上限、隐私模式与行为偏好
+ * [POS]: 全局配置状态中心，被主窗口、设置页、剪贴板监听与存储管理器共同订阅和读取
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import Foundation
 import SwiftUI
 import Carbon
@@ -7,7 +14,10 @@ public class AppSettings: ObservableObject {
     public static let shared = AppSettings()
     
     @Published public var maxHistoryCount: Int {
-        didSet { UserDefaults.standard.set(maxHistoryCount, forKey: "maxHistoryCount") }
+        didSet {
+            UserDefaults.standard.set(maxHistoryCount, forKey: "maxHistoryCount")
+            StorageManager.shared.enforceHistoryLimit()
+        }
     }
     
     @Published public var autoPasteOnSelect: Bool {
@@ -94,11 +104,18 @@ public class AppSettings: ObservableObject {
         self.hotkeyDisplay = defaults.string(forKey: "hotkeyDisplay") ?? "⌘ ⇧ V"
         self.launchAtLogin = LoginService.isEnabled
         self.privacyMode = defaults.bool(forKey: "privacyMode")
-        let savedKeyCode = UInt32(defaults.integer(forKey: "hotkeyKeyCode"))
-        let savedMods = UInt32(defaults.integer(forKey: "hotkeyCarbonModifiers"))
-        // Defaults: ⌘ + ⇧ + V (V = 9, cmdKey | shiftKey)
-        self.hotkeyKeyCode = savedKeyCode > 0 ? savedKeyCode : 9
-        self.hotkeyCarbonModifiers = savedMods > 0 ? savedMods : UInt32(cmdKey | shiftKey)
+        let hasSavedHotkey = defaults.object(forKey: "hotkeyKeyCode") != nil
+            && defaults.object(forKey: "hotkeyCarbonModifiers") != nil
+        if hasSavedHotkey {
+            let savedKeyCode = UInt32(max(0, defaults.integer(forKey: "hotkeyKeyCode")))
+            let savedMods = UInt32(max(0, defaults.integer(forKey: "hotkeyCarbonModifiers")))
+            self.hotkeyKeyCode = savedKeyCode
+            self.hotkeyCarbonModifiers = savedMods > 0 ? savedMods : UInt32(cmdKey | shiftKey)
+        } else {
+            // Defaults: ⌘ + ⇧ + V (V = 9, cmdKey | shiftKey)
+            self.hotkeyKeyCode = 9
+            self.hotkeyCarbonModifiers = UInt32(cmdKey | shiftKey)
+        }
     }
 
     /// Applies a newly recorded hotkey: persists it and re-registers with Carbon.

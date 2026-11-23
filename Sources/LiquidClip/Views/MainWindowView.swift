@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 StorageManager、AppSettings、UpdateChecker、PasteSimulator、SoundManager 与子视图组件
+ * [OUTPUT]: 提供主窗口根视图 MainWindowView，管理搜索筛选、分组导航、键盘交互与浮层调度
+ * [POS]: 应用核心 UI 容器，被 AppDelegate 挂载于 FloatingPanel 的 NSHostingView 中
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import SwiftUI
 import AppKit
 
@@ -15,6 +22,9 @@ public struct MainWindowView: View {
     @State private var showNewGroupModal: Bool = false
     @State private var toastMessage: String? = nil
     @State private var dismissedUpdateVersion: String? = nil
+    @State private var panelShowToken: Int = 0
+    @State private var isAccessibilityGranted: Bool = PasteSimulator.shared.isAccessibilityTrusted
+    @State private var dismissedAccessibilityBanner: Bool = false
     
     public var onClose: () -> Void
     public var registerKeyHandler: ((@escaping (NSEvent) -> Bool) -> Void)?
@@ -77,6 +87,15 @@ public struct MainWindowView: View {
         let selectedItem = currentSelectedItem(in: currentItems)
         let currentId = selectedItem?.id
         
+        // Single-pass aggregation for group item counts and pinned count
+        var computedGroupCounts: [UUID: Int] = [:]
+        var computedPinnedCount = 0
+        for item in storage.items {
+            if item.isPinned { computedPinnedCount += 1 }
+            if let gId = item.groupId { computedGroupCounts[gId, default: 0] += 1 }
+        }
+        let groupMap = Dictionary(uniqueKeysWithValues: storage.groups.map { ($0.id, $0) })
+        
         return ZStack {
             // Native Frosted Liquid Glass Background
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, state: .active)
@@ -129,11 +148,44 @@ public struct MainWindowView: View {
                     .help("前往 GitHub Releases 下载新版本")
                 }
 
+                // MARK: - Accessibility Permission Hint Banner
+                if settings.autoPasteOnSelect && !isAccessibilityGranted && !dismissedAccessibilityBanner {
+                    HStack(spacing: 8) {
+                        Image(systemName: "hand.raised.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.orange)
+                        Text("未开启辅助功能权限，选中记录将仅复制（需手动 ⌘V 粘贴）")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.primary.opacity(0.9))
+                        Spacer()
+                        Button("去授权") {
+                            PasteSimulator.shared.openAccessibilitySettings()
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2.5)
+                        .background(Color.orange.opacity(0.16))
+                        .cornerRadius(5)
+                        .buttonStyle(.plain)
+                        
+                        Button(action: { dismissedAccessibilityBanner = true }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.secondary.opacity(0.7))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .background(Color.orange.opacity(0.10))
+                }
+
                 // MARK: - Top Liquid Search & Filter Bar
                 VStack(spacing: 10) {
                     HStack(spacing: 10) {
                         // Liquid Search Box
-                        LiquidSearchBar(text: $searchText)
+                        LiquidSearchBar(text: $searchText, focusTrigger: panelShowToken)
                             .onChange(of: searchText) {
                                 selectedItemId = filteredItems.first?.id
                             }
@@ -167,7 +219,7 @@ public struct MainWindowView: View {
                             
                             // Custom Groups
                             ForEach(storage.groups) { group in
-                                groupPill(group)
+                                groupPill(group, count: computedGroupCounts[group.id, default: 0])
                             }
                             
                             // Add Group Button
@@ -214,6 +266,9 @@ public struct MainWindowView: View {
                                                 item: item,
                                                 index: idx,
                                                 isSelected: item.id == currentId,
+                                                showShortcuts: settings.showShortcutsInList,
+                                                group: item.groupId.flatMap { groupMap[$0] },
+                                                refreshTick: panelShowToken,
                                                 onSelect: {
                                                     selectedItemId = item.id
                                                 },
@@ -272,6 +327,9 @@ public struct MainWindowView: View {
                             if let item = selectedItem {
                                 deleteItem(item: item)
                             }
+                        },
+                        onShowToast: { msg in
+                            showToast(msg)
                         }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -288,17 +346,14 @@ public struct MainWindowView: View {
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.secondary)
                         
-                        if let gId = selectedGroupId, let g = storage.group(for: gId) {
+                        if let gId = selectedGroupId, let g = groupMap[gId] {
                             Text("• 分组: \(g.name)")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(.accentColor)
-                        } else {
-                            let pinnedCount = storage.items.filter { $0.isPinned }.count
-                            if pinnedCount > 0 {
-                                Text("• \(pinnedCount) 收藏")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.orange.opacity(0.9))
-                            }
+                        } else if computedPinnedCount > 0 {
+                            Text("• \(computedPinnedCount) 收藏")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.orange.opacity(0.9))
                         }
                     }
                     
@@ -383,16 +438,11 @@ public struct MainWindowView: View {
                     lineWidth: 1
                 )
         )
-        // Global Keyboard Event Handling inside window
-        .background(
-            KeyboardEventHandler { event in
-                handleKeyEvent(event)
-            }
-        )
         .onAppear {
             if selectedItemId == nil {
                 selectedItemId = filteredItems.first?.id
             }
+            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
             registerKeyHandler? { event in
                 handleKeyEvent(event)
             }
@@ -404,6 +454,11 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .floatingPanelWillShow)) { _ in
             showSettings = false
             showNewGroupModal = false
+            panelShowToken &+= 1
+            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
         }
     }
     
@@ -442,9 +497,8 @@ public struct MainWindowView: View {
     
     // Group Pill Button
     @ViewBuilder
-    private func groupPill(_ group: ClipGroup) -> some View {
+    private func groupPill(_ group: ClipGroup, count: Int) -> some View {
         let isSelected = selectedGroupId == group.id
-        let count = storage.items.filter { $0.groupId == group.id }.count
         Button(action: {
             let nextGroupId = (selectedGroupId == group.id) ? nil : group.id
             selectedGroupId = nextGroupId
@@ -582,6 +636,11 @@ public struct MainWindowView: View {
             return true
         }
         
+        // Do not intercept Enter, Backspace, arrows, or 1~9 while a modal overlay is open
+        if showSettings || showNewGroupModal {
+            return false
+        }
+        
         let items = filteredItems
         guard !items.isEmpty else {
             return false
@@ -656,33 +715,5 @@ public struct MainWindowView: View {
         }
         
         return false
-    }
-}
-
-// Transparent view that captures NSEvents
-struct KeyboardEventHandler: NSViewRepresentable {
-    let handler: (NSEvent) -> Bool
-    
-    func makeNSView(context: Context) -> KeyView {
-        let view = KeyView()
-        view.handler = handler
-        return view
-    }
-    
-    func updateNSView(_ nsView: KeyView, context: Context) {
-        nsView.handler = handler
-    }
-    
-    class KeyView: NSView {
-        var handler: ((NSEvent) -> Bool)?
-        
-        override var acceptsFirstResponder: Bool { true }
-        
-        override func keyDown(with event: NSEvent) {
-            if let handler = handler, handler(event) {
-                return
-            }
-            super.keyDown(with: event)
-        }
     }
 }

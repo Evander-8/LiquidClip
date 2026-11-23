@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 AppSettings、StorageManager、PasteSimulator、HotkeyManager 与 UpdateChecker
+ * [OUTPUT]: 提供偏好设置弹窗 SettingsView、快捷键录制器 HotkeyRecorderView 与更新徽章按钮 UpdateBadgeButton
+ * [POS]: 系统设置与权限自愈界面，作为模态浮层挂载在 MainWindowView 中
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import SwiftUI
 import AppKit
 
@@ -247,7 +254,7 @@ public struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Toggle("隐私模式 (历史仅保留在本次会话，不写入磁盘)", isOn: $settings.privacyMode)
                                 .font(.system(size: 13))
-                            Text("开启后立即清空已保存的历史文件，本次会话内的记录仅存在于内存；关闭后自动恢复落盘。")
+                            Text("开启后新复制的内容（含图片）仅保存在本次会话内存中、绝不落盘，已有分组与历史不受影响；关闭或退出后临时记录自动清除。")
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
                                 .padding(.leading, 18)
@@ -350,10 +357,17 @@ public struct SettingsView: View {
         .onAppear {
             isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
         }
-        // Poll live so a grant made in System Settings flips this UI within a second,
-        // even if the settings window stayed open the whole time.
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
+        // Poll only while Accessibility is ungranted; stop immediately once granted or dismissed.
+        .task(id: isAccessibilityGranted) {
+            guard !isAccessibilityGranted else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let trusted = PasteSimulator.shared.isAccessibilityTrusted
+                if trusted != isAccessibilityGranted {
+                    isAccessibilityGranted = trusted
+                    break
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
