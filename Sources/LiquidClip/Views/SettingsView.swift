@@ -1,26 +1,61 @@
 /**
- * [INPUT]: 依赖 AppSettings、StorageManager、PasteSimulator、HotkeyManager 与 UpdateChecker
- * [OUTPUT]: 提供偏好设置弹窗 SettingsView、快捷键录制器 HotkeyRecorderView 与更新徽章按钮 UpdateBadgeButton
- * [POS]: 系统设置与权限自愈界面，作为模态浮层挂载在 MainWindowView 中
+ * [INPUT]: 依赖 Views/Settings 分栏子页、AboutView、PasteSimulator 与 UpdateChecker
+ * [OUTPUT]: 提供 macOS 分栏导航式偏好设置弹窗 SettingsView
+ * [POS]: 系统设置中心，作为模态浮层挂载在 MainWindowView 中
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
 
 import SwiftUI
 import AppKit
 
+public enum SettingsTab: String, CaseIterable, Identifiable {
+    case general = "通用"
+    case capture = "粘贴与采集"
+    case storage = "存储与数据"
+    case privacy = "隐私与安全"
+    case about = "关于"
+    
+    public var id: String { rawValue }
+    
+    public var iconName: String {
+        switch self {
+        case .general: return "gearshape.fill"
+        case .capture: return "doc.on.clipboard.fill"
+        case .storage: return "internaldrive.fill"
+        case .privacy: return "hand.raised.fill"
+        case .about: return "drop.circle.fill"
+        }
+    }
+    
+    public var iconColor: Color {
+        switch self {
+        case .general: return .gray
+        case .capture: return .blue
+        case .storage: return .purple
+        case .privacy: return .indigo
+        case .about: return .teal
+        }
+    }
+    
+    public var subtitle: String {
+        switch self {
+        case .general: return "全局快捷键、开机自启与交互反馈"
+        case .capture: return "辅助功能权限、自动粘贴与离线 OCR"
+        case .storage: return "本地数据库占用、保留上限与数据清理"
+        case .privacy: return "密码管理器过滤、会话无痕与忽略名单"
+        case .about: return "版本信息、更新检查与项目主页"
+        }
+    }
+}
+
 public struct SettingsView: View {
-    @ObservedObject private var settings = AppSettings.shared
-    @ObservedObject private var storage = StorageManager.shared
+    @ObservedObject private var updateChecker = UpdateChecker.shared
+    @State private var selectedTab: SettingsTab = .general
     @State private var isAccessibilityGranted: Bool = PasteSimulator.shared.isAccessibilityTrusted
-    @State private var showClearConfirm = false
     public var onClose: () -> Void
     
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
-    }
-    
-    private var appBuild: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.0"
     }
     
     public init(onClose: @escaping () -> Void) {
@@ -28,337 +63,120 @@ public struct SettingsView: View {
     }
     
     public var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                HStack(spacing: 8) {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 15))
+        HStack(spacing: 0) {
+            // Left Glass Sidebar
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 7) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.accentColor)
                     Text("偏好设置")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 13.5, weight: .bold))
                 }
+                .padding(.horizontal, 14)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
+                
+                VStack(spacing: 4) {
+                    ForEach(SettingsTab.allCases) { tab in
+                        sidebarTabRow(tab)
+                    }
+                }
+                .padding(.horizontal, 10)
+                
                 Spacer()
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundColor(.secondary)
+                
+                Divider().opacity(0.3)
+                
+                Button(action: { selectedTab = .about }) {
+                    HStack(spacing: 6) {
+                        Text("LiquidClip v\(appVersion)")
+                            .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if updateChecker.latestVersion != nil {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .frame(width: 168)
             .background(Color.primary.opacity(0.03))
             
             Divider().opacity(0.4)
             
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 20) {
-                    // Accessibility Permission Section
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("系统权限")
-                            .font(.system(size: 12, weight: .bold))
+            // Right Tab Content
+            VStack(spacing: 0) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedTab.rawValue)
+                            .font(.system(size: 15, weight: .bold))
+                        Text(selectedTab.subtitle)
+                            .font(.system(size: 10.5))
                             .foregroundColor(.secondary)
-                        
-                        HStack(spacing: 12) {
-                            Image(systemName: isAccessibilityGranted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                                .font(.system(size: 20))
-                                .foregroundColor(isAccessibilityGranted ? .green : .orange)
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("辅助功能权限 (自动粘贴)")
-                                    .font(.system(size: 13, weight: .medium))
-                                Text(isAccessibilityGranted ? "已获得授权，选中记录可自动粘贴至目标窗口。" : "未获得授权。选中记录时将只复制到剪贴板，需手动 ⌘V 粘贴。")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Spacer()
-
-                            if !isAccessibilityGranted {
-                                Button("修复授权") {
-                                    PasteSimulator.shared.repairAccessibilityTrust()
-                                }
-                                .font(.system(size: 11, weight: .medium))
-                                .help("系统设置里已开启但仍然未授权时（常见于重新编译后），重置该授权条目并重新弹出授权提示")
-
-                                Button("去授权") {
-                                    PasteSimulator.shared.openAccessibilitySettings()
-                                }
-                                .font(.system(size: 11, weight: .medium))
-                            }
-                        }
-                        .padding(12)
-                        .background(Color.primary.opacity(0.04))
-                        .cornerRadius(10)
                     }
-                    
-                    // History & Memory Section
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("历史与存储")
-                            .font(.system(size: 12, weight: .bold))
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
                             .foregroundColor(.secondary)
-                        
-                        HStack {
-                            Text("最大历史记录保留数")
-                                .font(.system(size: 13))
-                            Spacer()
-                            Picker("", selection: $settings.maxHistoryCount) {
-                                Text("50 条").tag(50)
-                                Text("100 条").tag(100)
-                                Text("200 条 (推荐)").tag(200)
-                                Text("500 条").tag(500)
-                                Text("1000 条").tag(1000)
-                            }
-                            .frame(width: 140)
-                        }
-                        
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("清空普通历史记录")
-                                    .font(.system(size: 13))
-                                Text("保留已收藏项与所有自定义分组内的记录")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Button(action: {
-                                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                                    showClearConfirm.toggle()
-                                }
-                            }) {
-                                Text(showClearConfirm ? "收起确认" : "清空普通历史")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.red)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(Color.red.opacity(0.1))
-                                    .cornerRadius(6)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        
-                        if showClearConfirm {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundColor(.red)
-                                        .font(.system(size: 12))
-                                    Text("确定清空吗？已收藏与自定义分组内的记录将永久保留。")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(.red)
-                                }
-                                
-                                HStack(spacing: 8) {
-                                    Spacer()
-                                    Button("取消") {
-                                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                                            showClearConfirm = false
-                                        }
-                                    }
-                                    .font(.system(size: 11))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .background(Color.primary.opacity(0.06))
-                                    .cornerRadius(6)
-                                    .buttonStyle(.plain)
-                                    
-                                    Button("确认清空") {
-                                        storage.clearUnpinned()
-                                        SoundManager.shared.playDelete()
-                                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                                            showClearConfirm = false
-                                        }
-                                    }
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 4)
-                                    .background(Color.red)
-                                    .cornerRadius(6)
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(10)
-                            .background(Color.red.opacity(0.08))
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.red.opacity(0.2), lineWidth: 1)
-                            )
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
                     }
-                    
-                    // Behavior Section
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("快捷操作与反馈")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.secondary)
-
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("全局呼出快捷键")
-                                    .font(.system(size: 13))
-                                Text("在任意应用中按下即可呼出 LiquidClip，需含至少一个修饰键")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Text(settings.hotkeyDisplay)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.primary.opacity(0.06))
-                                .cornerRadius(6)
-                            HotkeyRecorderView()
-                        }
-
-                        Toggle("开机自动启动 LiquidClip", isOn: $settings.launchAtLogin)
-                            .font(.system(size: 13))
-
-                        Toggle("选中历史项时自动执行粘贴 (⌘V)", isOn: $settings.autoPasteOnSelect)
-                            .font(.system(size: 13))
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Toggle("划词自动复制 (划选文本即记录)", isOn: $settings.enableSelectionCopy)
-                                .font(.system(size: 13))
-                                .onChange(of: settings.enableSelectionCopy) {
-                                    ClipboardMonitor.shared.setupMouseSelectionMonitor()
-                                }
-                            Text("关闭时，忽略终端（如 Ghostty/iTerm）等应用的划选自动抓取，仅在按下 ⌘C 时才记录。")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                                .padding(.leading, 18)
-                        }
-                        
-                        Toggle("播放原生音效提示 (复制/粘贴/删除)", isOn: $settings.playSounds)
-                            .font(.system(size: 13))
-                        
-                        Toggle("在列表前 9 项显示数字快捷键角标 (1~9 直达)", isOn: $settings.showShortcutsInList)
-                            .font(.system(size: 13))
-                        
-                        Toggle("呼出窗口时跟随鼠标所在屏幕", isOn: $settings.windowFollowsCursor)
-                            .font(.system(size: 13))
-                        
-                        Toggle("自动识别图片文字 (离线 OCR，支持搜图)", isOn: $settings.enableAutoOCR)
-                            .font(.system(size: 13))
-                    }
-                    
-                    // Privacy & Security
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("隐私与安全")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.secondary)
-                        
-                        Toggle("忽略密码管理器复制的内容 (1Password / Bitwarden / 钥匙串等)", isOn: $settings.ignorePasswordManagers)
-                            .font(.system(size: 13))
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Toggle("隐私模式 (历史仅保留在本次会话，不写入磁盘)", isOn: $settings.privacyMode)
-                                .font(.system(size: 13))
-                            Text("开启后新复制的内容（含图片）仅保存在本次会话内存中、绝不落盘，已有分组与历史不受影响；关闭或退出后临时记录自动清除。")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                                .padding(.leading, 18)
-                        }
-                        
-                        ExcludedAppsSettingsSection()
-                    }
-                    
-                    // About Section with Version & Build
-                    VStack(spacing: 8) {
-                        Divider().opacity(0.3)
-                            .padding(.top, 4)
-                        
-                        HStack(spacing: 10) {
-                            if let icon = NSApp.applicationIconImage {
-                                Image(nsImage: icon)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(width: 34, height: 34)
-                                    .shadow(color: Color.black.opacity(0.2), radius: 3, y: 1)
-                            } else {
-                                Image(systemName: "drop.fill")
-                                    .font(.system(size: 20))
-                                    .foregroundColor(.cyan)
-                            }
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text("LiquidClip 流光剪贴板")
-                                        .font(.system(size: 13, weight: .bold))
-                                    Text("v\(appVersion)")
-                                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                        .foregroundColor(.accentColor)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 1.5)
-                                        .background(Color.accentColor.opacity(0.12))
-                                        .cornerRadius(4)
-                                }
-                                
-                                Text("原生液态玻璃架构 · Swift 6 + SwiftUI · 内存占用 < 18MB")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Spacer()
-                            
-                            VStack(alignment: .trailing, spacing: 3) {
-                                Text("Build \(appBuild)")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary.opacity(0.7))
-                                
-                                Button(action: {
-                                    if let url = URL(string: "https://github.com/Evander-8/LiquidClip") {
-                                        NSWorkspace.shared.open(url)
-                                    }
-                                }) {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "chevron.left.forwardslash.chevron.right")
-                                            .font(.system(size: 8))
-                                        Text("GitHub")
-                                            .font(.system(size: 10, weight: .semibold))
-                                    }
-                                    .foregroundColor(.accentColor)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2.5)
-                                    .background(Color.accentColor.opacity(0.1))
-                                    .cornerRadius(5)
-                                }
-                                .buttonStyle(.plain)
-                                .help("访问 GitHub 开源仓库")
-
-                                UpdateBadgeButton()
-                            }
-                        }
-                        
-                        HStack(spacing: 4) {
-                            Text("开源项目主页:")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                            Link("https://github.com/Evander-8/LiquidClip", destination: URL(string: "https://github.com/Evander-8/LiquidClip")!)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.accentColor)
-                            Spacer()
-                        }
-                        .padding(.top, 1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 6)
+                    .buttonStyle(.plain)
+                    .help("关闭设置 (Esc)")
                 }
-                .padding(20)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(Color.primary.opacity(0.02))
+                
+                Divider().opacity(0.35)
+                
+                ScrollView(.vertical, showsIndicators: false) {
+                    Group {
+                        switch selectedTab {
+                        case .general:
+                            GeneralSettingsTab()
+                        case .capture:
+                            CaptureSettingsTab(isAccessibilityGranted: isAccessibilityGranted)
+                        case .storage:
+                            StorageSettingsTab()
+                        case .privacy:
+                            PrivacySettingsTab()
+                        case .about:
+                            AboutView(showsCloseButton: false)
+                        }
+                    }
+                    .padding(18)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 480, height: 480)
+        .frame(width: 640, height: 470)
         .background(
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, state: .active)
         )
-        .cornerRadius(16)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.white.opacity(0.28), location: 0),
+                            .init(color: Color.white.opacity(0.08), location: 0.5),
+                            .init(color: Color.black.opacity(0.18), location: 1)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
+        .shadow(color: Color.black.opacity(0.26), radius: 22, y: 8)
         .onAppear {
             isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
         }
@@ -378,108 +196,45 @@ public struct SettingsView: View {
             isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
         }
     }
-}
-
-// MARK: - Hotkey Recorder
-
-/// A compact "录制" button: when recording, a local key monitor captures the next
-/// keydown (with at least one modifier) as the new global hotkey. Esc cancels.
-public struct HotkeyRecorderView: View {
-    @ObservedObject private var settings = AppSettings.shared
-    @State private var isRecording = false
-    @State private var monitor: Any?
-
-    public init() {}
-
-    public var body: some View {
-        Button(isRecording ? "按下新快捷键… (Esc 取消)" : "录制") {
-            if isRecording {
-                stopRecording()
-            } else {
-                startRecording()
+    
+    @ViewBuilder
+    private func sidebarTabRow(_ tab: SettingsTab) -> some View {
+        let isSelected = selectedTab == tab
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.14)) {
+                selectedTab = tab
             }
-        }
-        .font(.system(size: 11, weight: .medium))
-        .onDisappear { stopRecording() }
-    }
-
-    private func startRecording() {
-        isRecording = true
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Cancel on Escape
-            if event.keyCode == 53 {
-                stopRecording()
-                return nil
-            }
-            // Pure modifier presses: swallow and keep waiting for the real key
-            let modifierOnlyKeyCodes: Set<UInt16> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
-            if modifierOnlyKeyCodes.contains(event.keyCode) {
-                return nil
-            }
-            let carbonMods = HotkeyManager.carbonModifiers(from: event.modifierFlags)
-            guard carbonMods != 0 else {
-                // No modifier → can't be a sane global hotkey; swallow to avoid typing into UI
-                return nil
-            }
-            let keyLabel = HotkeyManager.keyDisplay(forVirtualKey: UInt32(event.keyCode))
-            let display = HotkeyManager.modifierDisplay(from: carbonMods) + " " + keyLabel
-            settings.setHotkey(keyCode: UInt32(event.keyCode), carbonModifiers: carbonMods, display: display)
-            stopRecording()
-            return nil
-        }
-    }
-
-    private func stopRecording() {
-        if let monitor = monitor {
-            NSEvent.removeMonitor(monitor)
-            self.monitor = nil
-        }
-        isRecording = false
-    }
-}
-
-// MARK: - Update Badge Button
-
-/// "检查更新" button; shows the remote version inline when one is available.
-public struct UpdateBadgeButton: View {
-    @ObservedObject private var checker = UpdateChecker.shared
-    @State private var checking = false
-
-    public init() {}
-
-    public var body: some View {
-        Button {
-            if checker.latestVersion != nil, let url = checker.latestReleaseURL {
-                NSWorkspace.shared.open(url)
-            } else {
-                checking = true
-                UpdateChecker.shared.checkForUpdate()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { checking = false }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                if checking {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 8))
-                    Text("检查中…")
-                } else if let version = checker.latestVersion {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 8))
-                        .foregroundColor(.green)
-                    Text("新版本 \(version)")
-                } else {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 8))
-                    Text("检查更新")
+        }) {
+            HStack(spacing: 8) {
+                SettingsIconBadge(systemName: tab.iconName, color: tab.iconColor, size: 20)
+                Text(tab.rawValue)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                    .foregroundColor(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if tab == .about && updateChecker.latestVersion != nil {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 6, height: 6)
+                }
+                if tab == .capture && !isAccessibilityGranted {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 6, height: 6)
                 }
             }
-            .foregroundColor(checker.latestVersion != nil ? .green : .accentColor)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2.5)
-            .background((checker.latestVersion != nil ? Color.green : Color.accentColor).opacity(0.1))
-            .cornerRadius(5)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6.5)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 0.6)
+            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(checker.latestVersion != nil ? "前往 GitHub Releases 下载新版本" : "检查 GitHub 上的最新版本")
     }
 }

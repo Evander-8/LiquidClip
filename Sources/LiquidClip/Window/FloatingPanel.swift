@@ -12,6 +12,7 @@ import SwiftUI
 extension Notification.Name {
     public static let floatingPanelDidHide = Notification.Name("FloatingPanelDidHideNotification")
     public static let floatingPanelWillShow = Notification.Name("FloatingPanelWillShowNotification")
+    public static let openLiquidClipSettings = Notification.Name("OpenLiquidClipSettingsNotification")
 }
 
 @MainActor

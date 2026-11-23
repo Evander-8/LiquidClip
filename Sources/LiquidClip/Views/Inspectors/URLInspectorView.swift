@@ -22,7 +22,7 @@ public struct URLInspectorView: View {
     public var body: some View {
         let raw = item.plainText ?? ""
         let url = URL(string: raw)
-        let queryItems = URLComponents(string: raw)?.queryItems ?? []
+        let queryItems = TextTransformTools.extractURLQueryItems(from: raw)
         
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {

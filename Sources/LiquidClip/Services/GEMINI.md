@@ -11,6 +11,6 @@ PasteSimulator.swift: 剪贴板写入（含纯文本去格式）与 CGEvent 模�
 SQLiteStore.swift: 基于系统 SQLite3 + FTS5 trigram 的 WAL 模式增量持久化与全文检索引擎
 SoundManager.swift: 原生系统音效播放器，管理复制、粘贴与删除反馈音
 StorageManager.swift: 历史与分组存储协调中心，负责 JSON->SQLite 无损迁移、隐私模式隔离、后台图像/OCR 管线与缓存回收
-UpdateChecker.swift: GitHub Releases 轻量更新检测器，启动时单次请求版本元数据并广播通知
+UpdateChecker.swift: GitHub Releases 轻量更新检测器，支持启动静默检查与交互式检查状态反馈
 
 [PROTOCOL]: Update this header on change, then check GEMINI.md

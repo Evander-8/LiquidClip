@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 Foundation URLSession、AppKit 与 Bundle 版本元数据
+ * [OUTPUT]: 提供 GitHub Releases 版本检测单例 UpdateChecker，支持静默检查与交互式状态反馈
+ * [POS]: 应用更新检测服务，被 AppDelegate、MenuBarController、MainWindowView 与 AboutView 订阅
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import Foundation
 import AppKit
 
@@ -12,6 +19,8 @@ public class UpdateChecker: ObservableObject {
 
     /// Remote tag (e.g. "v1.0.4") when a newer release exists, otherwise nil.
     @Published public var latestVersion: String?
+    @Published public var isChecking: Bool = false
+    @Published public var checkFeedback: String? = nil
     public var latestReleaseURL: URL? {
         URL(string: "https://github.com/\(Self.repoPath)/releases/latest")
     }
@@ -26,26 +35,52 @@ public class UpdateChecker: ObservableObject {
     public func checkForUpdateOnce() {
         guard !checked else { return }
         checked = true
-        checkForUpdate()
+        checkForUpdate(interactive: false)
     }
 
-    public func checkForUpdate() {
+    public func checkForUpdate(interactive: Bool = false) {
+        guard !isChecking else { return }
         guard let url = URL(string: "https://api.github.com/repos/\(Self.repoPath)/releases/latest") else { return }
+        if interactive {
+            isChecking = true
+            checkFeedback = nil
+        }
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
-            guard let data = data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = obj["tag_name"] as? String else { return }
-            let remote = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            let parsedTag: String?
+            if error == nil,
+               let data = data,
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let tag = obj["tag_name"] as? String {
+                parsedTag = tag
+            } else {
+                parsedTag = nil
+            }
             let local = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+
             Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.isChecking = false
+                guard let tag = parsedTag else {
+                    if interactive {
+                        self.checkFeedback = "检查更新失败，请稍后重试"
+                    }
+                    return
+                }
+                let remote = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
                 if Self.isVersion(remote, newerThan: local) {
-                    self?.latestVersion = tag
+                    self.latestVersion = tag
+                    self.checkFeedback = nil
                     NotificationCenter.default.post(name: Self.updateFoundNotification, object: nil,
                                                     userInfo: ["version": tag])
-                    self?.presentOneTimeAlert(version: tag, current: local)
+                    self.presentOneTimeAlert(version: tag, current: local)
+                } else {
+                    self.latestVersion = nil
+                    if interactive {
+                        self.checkFeedback = "当前已是最新版本 (v\(local))"
+                    }
                 }
             }
         }.resume()

@@ -190,6 +190,9 @@ public struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshAccessibility()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openLiquidClipSettings)) { _ in
+            viewModel.showSettings = true
+        }
     }
     
     // MARK: - Subviews

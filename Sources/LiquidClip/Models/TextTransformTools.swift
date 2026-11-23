@@ -122,4 +122,39 @@ public enum TextTransformTools {
         nsImage.addRepresentation(rep)
         return nsImage
     }
+    
+    // MARK: - URL Query Extraction (Standard + SPA Hash-Route #/path?k=v)
+    
+    public static func extractURLQueryItems(from raw: String) -> [URLQueryItem] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        
+        if let components = URLComponents(string: trimmed) {
+            var results: [URLQueryItem] = components.queryItems ?? []
+            if let encodedFrag = components.percentEncodedFragment,
+               let qIndex = encodedFrag.firstIndex(of: "?") {
+                let afterQ = encodedFrag[encodedFrag.index(after: qIndex)...]
+                let queryPart = afterQ.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? afterQ[...]
+                if !queryPart.isEmpty {
+                    var fragComponents = URLComponents()
+                    fragComponents.percentEncodedQuery = String(queryPart)
+                    if let fragItems = fragComponents.queryItems {
+                        results.append(contentsOf: fragItems)
+                    }
+                }
+            }
+            return results
+        }
+        
+        // Fallback for URLs containing unescaped characters that fail strict URLComponents parsing
+        guard let qIndex = trimmed.firstIndex(of: "?") else { return [] }
+        let queryString = String(trimmed[trimmed.index(after: qIndex)...])
+        return queryString.split(separator: "&").compactMap { pair in
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let rawName = parts.first, !rawName.isEmpty else { return nil }
+            let name = String(rawName).removingPercentEncoding ?? String(rawName)
+            let value = parts.count > 1 ? (String(parts[1]).removingPercentEncoding ?? String(parts[1])) : nil
+            return URLQueryItem(name: name, value: value)
+        }
+    }
 }

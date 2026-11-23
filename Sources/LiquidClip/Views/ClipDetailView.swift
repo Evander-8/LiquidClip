@@ -50,7 +50,7 @@ public struct ClipDetailView: View {
                                 Text("粘贴")
                                     .font(.system(size: 11, weight: .semibold))
                                     .lineLimit(1)
-                                KeyboardBadge("↵")
+                                KeyboardBadge("↵", onAccent: true)
                             }
                             .foregroundColor(.white)
                             .padding(.horizontal, 10)

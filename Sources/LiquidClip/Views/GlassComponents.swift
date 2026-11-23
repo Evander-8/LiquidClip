@@ -85,25 +85,27 @@ public struct AppIconView: View {
 public struct KeyboardBadge: View {
     public let text: String
     public var isHighlighted: Bool = false
+    public var onAccent: Bool = false
     
-    public init(_ text: String, isHighlighted: Bool = false) {
+    public init(_ text: String, isHighlighted: Bool = false, onAccent: Bool = false) {
         self.text = text
         self.isHighlighted = isHighlighted
+        self.onAccent = onAccent
     }
     
     public var body: some View {
         Text(text)
             .font(.system(size: 11, weight: .semibold, design: .rounded))
-            .foregroundColor(isHighlighted ? Color.primary : Color.secondary)
+            .foregroundColor(onAccent ? Color.white : (isHighlighted ? Color.primary : Color.secondary))
             .padding(.horizontal, 6)
             .padding(.vertical, 2.5)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isHighlighted ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08))
+                    .fill(onAccent ? Color.white.opacity(0.22) : (isHighlighted ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08)))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                    .stroke(Color.white.opacity(onAccent ? 0.35 : 0.15), lineWidth: 0.5)
             )
     }
 }

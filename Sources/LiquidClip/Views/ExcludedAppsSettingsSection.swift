@@ -135,9 +135,15 @@ public struct ExcludedAppsSettingsSection: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color.primary.opacity(0.03))
-        .cornerRadius(10)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 0.6)
+        )
     }
     
     private func addExcludedApp(_ rawId: String) {

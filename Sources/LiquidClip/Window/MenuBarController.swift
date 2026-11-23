@@ -77,6 +77,10 @@ public class MenuBarController: NSObject {
         showItem.target = self
         menu.addItem(showItem)
         
+        let settingsItem = NSMenuItem(title: "偏好设置…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        
         menu.addItem(NSMenuItem.separator())
         
         let clearItem = NSMenuItem(title: "清空未收藏记录", action: #selector(clearHistory), keyEquivalent: "")
@@ -102,6 +106,15 @@ public class MenuBarController: NSObject {
         floatingPanel?.toggleVisibility()
     }
 
+    @objc private func openSettings() {
+        if floatingPanel?.isVisible != true {
+            floatingPanel?.showSmoothly()
+        }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .openLiquidClipSettings, object: nil)
+        }
+    }
+
     @objc private func openLatestRelease() {
         if let url = UpdateChecker.shared.latestReleaseURL {
             NSWorkspace.shared.open(url)
@@ -114,24 +127,7 @@ public class MenuBarController: NSObject {
     }
     
     @objc private func showAbout() {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        
-        let alert = NSAlert()
-        alert.messageText = "LiquidClip 流光剪贴板 v\(version)"
-        alert.informativeText = "版本号: v\(version) (Build \(build))\n\n一款原生液态玻璃质感的轻量 macOS 剪贴板历史管理器。\n\n技术栈: 100% 纯原生 Swift 6 + SwiftUI + AppKit\n内存占用: ~15MB 极度轻量\n全局快捷键: \(AppSettings.shared.hotkeyDisplay)\n\n开源地址: https://github.com/Evander-8/LiquidClip\n\nCopyright © 2026 LiquidClip. All rights reserved."
-        alert.alertStyle = .informational
-        if let icon = NSApp.applicationIconImage {
-            alert.icon = icon
-        }
-        alert.addButton(withTitle: "确定")
-        alert.addButton(withTitle: "访问 GitHub 仓库")
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            if let url = URL(string: "https://github.com/Evander-8/LiquidClip") {
-                NSWorkspace.shared.open(url)
-            }
-        }
+        AboutWindowController.shared.show()
     }
     
     @objc private func quitApp() {

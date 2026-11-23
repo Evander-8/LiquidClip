@@ -51,6 +51,49 @@ public class StorageManager: ObservableObject {
         AppSettings.shared.privacyMode
     }
     
+    public var dataDirectoryURL: URL {
+        appSupportURL
+    }
+    
+    public func computeStorageFootprintAsync() async -> (totalBytes: Int64, imageCount: Int) {
+        let dbURL = dbFileURL
+        let imagesURL = imagesFolderURL
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                let fm = FileManager.default
+                var totalBytes: Int64 = 0
+                var imageCount = 0
+                
+                let dbFiles = [
+                    dbURL,
+                    URL(fileURLWithPath: dbURL.path + "-wal"),
+                    URL(fileURLWithPath: dbURL.path + "-shm")
+                ]
+                for file in dbFiles {
+                    if let attrs = try? fm.attributesOfItem(atPath: file.path),
+                       let size = attrs[.size] as? NSNumber {
+                        totalBytes += size.int64Value
+                    }
+                }
+                
+                if let imgFiles = try? fm.contentsOfDirectory(
+                    at: imagesURL,
+                    includingPropertiesForKeys: [.fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                ) {
+                    for file in imgFiles {
+                        imageCount += 1
+                        if let values = try? file.resourceValues(forKeys: [.fileSizeKey]),
+                           let size = values.fileSize {
+                            totalBytes += Int64(size)
+                        }
+                    }
+                }
+                continuation.resume(returning: (totalBytes, imageCount))
+            }
+        }
+    }
+    
     // MARK: - Persistence & One-Time JSON -> SQLite3 Migration
 
     /// Privacy mode semantics:
