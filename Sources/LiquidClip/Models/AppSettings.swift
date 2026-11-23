@@ -44,6 +44,10 @@ public class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(ignorePasswordManagers, forKey: "ignorePasswordManagers") }
     }
     
+    @Published public var enableAutoOCR: Bool {
+        didSet { UserDefaults.standard.set(enableAutoOCR, forKey: "enableAutoOCR") }
+    }
+    
     @Published public var excludedApps: [String] {
         didSet { UserDefaults.standard.set(excludedApps, forKey: "excludedApps") }
     }
@@ -94,6 +98,7 @@ public class AppSettings: ObservableObject {
         self.showShortcutsInList = defaults.object(forKey: "showShortcutsInList") != nil ? defaults.bool(forKey: "showShortcutsInList") : true
         self.windowFollowsCursor = defaults.object(forKey: "windowFollowsCursor") != nil ? defaults.bool(forKey: "windowFollowsCursor") : true
         self.ignorePasswordManagers = defaults.object(forKey: "ignorePasswordManagers") != nil ? defaults.bool(forKey: "ignorePasswordManagers") : true
+        self.enableAutoOCR = defaults.object(forKey: "enableAutoOCR") != nil ? defaults.bool(forKey: "enableAutoOCR") : true
         self.excludedApps = defaults.stringArray(forKey: "excludedApps") ?? [
             "com.agilebits.onepassword",
             "com.agilebits.onepassword7",

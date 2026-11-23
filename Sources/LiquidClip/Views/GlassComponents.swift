@@ -210,3 +210,76 @@ public struct GlassIconButton: View {
         .onHover { isHovered = $0 }
     }
 }
+
+// Responsive wrapping flow layout for action chips
+public struct FlowLayout: Layout {
+    public var horizontalSpacing: CGFloat
+    public var verticalSpacing: CGFloat
+    
+    public init(horizontalSpacing: CGFloat = 6, verticalSpacing: CGFloat = 6) {
+        self.horizontalSpacing = horizontalSpacing
+        self.verticalSpacing = verticalSpacing
+    }
+    
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let result = layoutRows(maxWidth: maxWidth, subviews: subviews)
+        let width = proposal.width ?? result.maxLineWidth
+        return CGSize(width: width, height: result.totalHeight)
+    }
+    
+    public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = layoutRows(maxWidth: bounds.width, subviews: subviews)
+        var y = bounds.minY
+        for row in result.rows {
+            var x = bounds.minX
+            for item in row.items {
+                item.subview.place(
+                    at: CGPoint(x: x, y: y),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(width: item.size.width, height: item.size.height)
+                )
+                x += item.size.width + horizontalSpacing
+            }
+            y += row.height + verticalSpacing
+        }
+    }
+    
+    private struct RowItem {
+        let subview: LayoutSubview
+        let size: CGSize
+    }
+    
+    private struct Row {
+        var items: [RowItem] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+    
+    private func layoutRows(maxWidth: CGFloat, subviews: Subviews) -> (rows: [Row], maxLineWidth: CGFloat, totalHeight: CGFloat) {
+        var rows: [Row] = []
+        var current = Row()
+        
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let neededWidth = current.items.isEmpty ? size.width : current.width + horizontalSpacing + size.width
+            if !current.items.isEmpty && neededWidth > maxWidth {
+                rows.append(current)
+                current = Row(items: [RowItem(subview: subview, size: size)], width: size.width, height: size.height)
+            } else {
+                current.items.append(RowItem(subview: subview, size: size))
+                current.width = neededWidth
+                current.height = max(current.height, size.height)
+            }
+        }
+        if !current.items.isEmpty {
+            rows.append(current)
+        }
+        
+        let maxLineWidth = rows.map(\.width).max() ?? 0
+        let totalHeight: CGFloat = rows.isEmpty
+            ? 0
+            : rows.reduce(0) { $0 + $1.height } + verticalSpacing * CGFloat(max(0, rows.count - 1))
+        return (rows, maxLineWidth, totalHeight)
+    }
+}

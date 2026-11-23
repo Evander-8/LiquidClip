@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 public struct ClipRowView: View, Equatable {
     public let item: ClipItem
@@ -17,10 +18,12 @@ public struct ClipRowView: View, Equatable {
     public let refreshTick: Int
     public let onSelect: () -> Void
     public let onPaste: () -> Void
+    public let onPastePlainText: (() -> Void)?
     public let onTogglePin: () -> Void
     public let onDelete: () -> Void
     
     @State private var isHovered = false
+    @State private var lastTapDate: Date = .distantPast
     
     public static func == (lhs: ClipRowView, rhs: ClipRowView) -> Bool {
         lhs.item.id == rhs.item.id &&
@@ -44,6 +47,7 @@ public struct ClipRowView: View, Equatable {
         refreshTick: Int = 0,
         onSelect: @escaping () -> Void,
         onPaste: @escaping () -> Void,
+        onPastePlainText: (() -> Void)? = nil,
         onTogglePin: @escaping () -> Void,
         onDelete: @escaping () -> Void
     ) {
@@ -55,6 +59,7 @@ public struct ClipRowView: View, Equatable {
         self.refreshTick = refreshTick
         self.onSelect = onSelect
         self.onPaste = onPaste
+        self.onPastePlainText = onPastePlainText
         self.onTogglePin = onTogglePin
         self.onDelete = onDelete
     }
@@ -224,11 +229,27 @@ public struct ClipRowView: View, Equatable {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture {
+            let now = Date()
             onSelect()
+            if now.timeIntervalSince(lastTapDate) < 0.35 {
+                lastTapDate = .distantPast
+                onPaste()
+            } else {
+                lastTapDate = now
+            }
+        }
+        .onDrag {
+            makeItemProvider(for: item)
         }
         .contextMenu {
             Button(action: onPaste) {
                 Label("立即粘贴", systemImage: "arrow.right.doc.on.clipboard")
+            }
+            if let onPastePlainText = onPastePlainText,
+               item.type == .text || item.type == .url || item.type == .color {
+                Button(action: onPastePlainText) {
+                    Label("纯文本粘贴 (⇧↵)", systemImage: "doc.plaintext")
+                }
             }
             Button(action: onTogglePin) {
                 Label(item.isPinned ? "取消收藏" : "收藏此项", systemImage: item.isPinned ? "pin.slash" : "pin")
@@ -258,6 +279,31 @@ public struct ClipRowView: View, Equatable {
             Button(role: .destructive, action: onDelete) {
                 Label("删除此项", systemImage: "trash")
             }
+        }
+    }
+    
+    private func makeItemProvider(for item: ClipItem) -> NSItemProvider {
+        switch item.type {
+        case .text, .color:
+            return NSItemProvider(object: (item.plainText ?? item.colorHex ?? "") as NSString)
+        case .url:
+            if let text = item.plainText, let url = URL(string: text) {
+                return NSItemProvider(object: url as NSURL)
+            }
+            return NSItemProvider(object: (item.plainText ?? "") as NSString)
+        case .file:
+            if let path = item.filePaths?.first {
+                return NSItemProvider(object: URL(fileURLWithPath: path) as NSURL)
+            }
+            return NSItemProvider()
+        case .image:
+            if let name = item.imageFileName, let url = StorageManager.shared.imageFileURL(named: name) {
+                return NSItemProvider(object: url as NSURL)
+            }
+            if let img = item.cachedPrimaryImage() ?? item.loadPrimaryImage() {
+                return NSItemProvider(object: img)
+            }
+            return NSItemProvider()
         }
     }
 }

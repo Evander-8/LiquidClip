@@ -1,7 +1,7 @@
 /**
- * [INPUT]: 依赖 ClipItem、StorageManager、ClipboardMonitor、SoundManager 与 FastTextEditor
- * [OUTPUT]: 提供右侧内容检查器 ClipDetailView 及异步大图预览与后台 PNG 导出能力
- * [POS]: 剪贴板详情与快速操作面板，响应 MainWindowView 选中的当前记录
+ * [INPUT]: 依赖 ClipItem、StorageManager、ClipboardMonitor、SoundManager 与 Views/Inspectors 下的分类型检查器
+ * [OUTPUT]: 提供右侧内容检查器路由容器 ClipDetailView，负责顶部动作栏、分组归档与按类型分发渲染
+ * [POS]: 右侧详情检查器主入口，连接 MainWindowView 与各类型 Inspector 子视图
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
 
@@ -11,17 +11,18 @@ import AppKit
 public struct ClipDetailView: View {
     public let item: ClipItem?
     public let onPaste: () -> Void
+    public let onPastePlainText: (() -> Void)?
     public let onCopy: () -> Void
     public let onTogglePin: () -> Void
     public let onDelete: () -> Void
     public var onShowToast: ((String) -> Void)?
     
     @State private var showFullText: Bool = false
-    private let previewCharacterLimit: Int = 50_000
     
     public init(
         item: ClipItem?,
         onPaste: @escaping () -> Void,
+        onPastePlainText: (() -> Void)? = nil,
         onCopy: @escaping () -> Void,
         onTogglePin: @escaping () -> Void,
         onDelete: @escaping () -> Void,
@@ -29,6 +30,7 @@ public struct ClipDetailView: View {
     ) {
         self.item = item
         self.onPaste = onPaste
+        self.onPastePlainText = onPastePlainText
         self.onCopy = onCopy
         self.onTogglePin = onTogglePin
         self.onDelete = onDelete
@@ -40,12 +42,12 @@ public struct ClipDetailView: View {
             if let item = item {
                 VStack(spacing: 0) {
                     // Top Action Bar
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         Button(action: onPaste) {
                             HStack(spacing: 5) {
                                 Image(systemName: "arrow.right.doc.on.clipboard")
                                     .font(.system(size: 11, weight: .semibold))
-                                Text("立即粘贴")
+                                Text("粘贴")
                                     .font(.system(size: 11, weight: .semibold))
                                     .lineLimit(1)
                                 KeyboardBadge("↵")
@@ -60,16 +62,37 @@ public struct ClipDetailView: View {
                         .fixedSize()
                         .layoutPriority(2)
                         
+                        if let onPastePlainText = onPastePlainText,
+                           item.type == .text || item.type == .url || item.type == .color {
+                            Button(action: onPastePlainText) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc.plaintext")
+                                        .font(.system(size: 11))
+                                    Text("纯文本")
+                                        .font(.system(size: 11))
+                                        .lineLimit(1)
+                                }
+                                .foregroundColor(.primary)
+                                .padding(.horizontal, 8)
+                                .frame(height: 28)
+                                .background(Color.primary.opacity(0.06))
+                                .cornerRadius(8)
+                            }
+                            .buttonStyle(.plain)
+                            .fixedSize()
+                            .help("纯文本粘贴（忽略富文本样式，快捷键 ⇧↵）")
+                        }
+                        
                         Button(action: onCopy) {
                             HStack(spacing: 4) {
                                 Image(systemName: "doc.on.doc")
                                     .font(.system(size: 11))
-                                Text("仅复制")
+                                Text("复制")
                                     .font(.system(size: 11))
                                     .lineLimit(1)
                             }
                             .foregroundColor(.primary)
-                            .padding(.horizontal, 9)
+                            .padding(.horizontal, 8)
                             .frame(height: 28)
                             .background(Color.primary.opacity(0.06))
                             .cornerRadius(8)
@@ -108,14 +131,16 @@ public struct ClipDetailView: View {
                                     Text(g.name)
                                         .font(.system(size: 11, weight: .semibold))
                                         .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .frame(maxWidth: 90, alignment: .leading)
                                 } else {
-                                    Text("加入分组")
+                                    Text("分组")
                                         .font(.system(size: 11))
                                         .lineLimit(1)
                                 }
                             }
                             .foregroundColor(item.groupId != nil ? .accentColor : .primary)
-                            .padding(.horizontal, 9)
+                            .padding(.horizontal, 8)
                             .frame(height: 28)
                             .background(item.groupId != nil ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.06))
                             .cornerRadius(8)
@@ -168,7 +193,6 @@ public struct ClipDetailView: View {
                             .foregroundColor(.secondary)
                         Spacer()
                         
-                        // Group badge
                         if let group = StorageManager.shared.group(for: item.groupId) {
                             HStack(spacing: 3) {
                                 Image(systemName: group.icon)
@@ -195,30 +219,30 @@ public struct ClipDetailView: View {
                     .padding(.top, 10)
                     .padding(.bottom, 4)
                     
-                    // Main Content Inspector
+                    // Route to modular Type Inspector
                     switch item.type {
                     case .text:
-                        textView(for: item)
+                        TextInspectorView(item: item, showFullText: $showFullText, onCopyText: copyTransformedText)
                             .padding(14)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     case .image:
                         ScrollView(.vertical, showsIndicators: false) {
-                            imageView(for: item)
+                            ImageInspectorView(item: item, onCopyText: copyTransformedText, onShowToast: { onShowToast?($0) })
                                 .padding(14)
                         }
                     case .color:
                         ScrollView(.vertical, showsIndicators: false) {
-                            colorView(for: item)
+                            ColorInspectorView(item: item, onCopyText: copyTransformedText)
                                 .padding(14)
                         }
                     case .url:
                         ScrollView(.vertical, showsIndicators: false) {
-                            urlView(for: item)
+                            URLInspectorView(item: item, onCopyText: copyTransformedText)
                                 .padding(14)
                         }
                     case .file:
                         ScrollView(.vertical, showsIndicators: false) {
-                            fileView(for: item)
+                            FileInspectorView(item: item)
                                 .padding(14)
                         }
                     }
@@ -248,80 +272,6 @@ public struct ClipDetailView: View {
         )
     }
     
-    // MARK: - Text Inspector
-    @ViewBuilder
-    private func textView(for item: ClipItem) -> some View {
-        let text = item.plainText ?? ""
-        let isOverLimit = text.count > previewCharacterLimit
-        let displayText = (isOverLimit && !showFullText) ? String(text.prefix(previewCharacterLimit)) : text
-        
-        VStack(alignment: .leading, spacing: 10) {
-            // Metrics Bar
-            HStack(spacing: 12) {
-                metricItem(title: "字符数", value: "\(item.charCount)")
-                metricItem(title: "词数", value: "\(item.wordCount)")
-                metricItem(title: "行数", value: "\(item.lineCount)")
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.primary.opacity(0.04))
-            .cornerRadius(8)
-            
-            // Text Transformation Bar (lazy evaluation prevents freezing on large text)
-            HStack(spacing: 6) {
-                transformButton("大写") { text.uppercased() }
-                transformButton("小写") { text.lowercased() }
-                transformButton("首字母大写") { text.capitalized }
-                transformButton("清除空格") { text.trimmingCharacters(in: .whitespacesAndNewlines) }
-            }
-            
-            // Large text warning banner if truncated
-            if isOverLimit {
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(.orange)
-                    Text(showFullText ? "已加载全部内容（共 \(item.charCount) 字符）" : "文本较长，当前已预览前 \(previewCharacterLimit) 字符（共 \(item.charCount) 字符）。「粘贴」或「复制」仍为完整内容。")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    if !showFullText {
-                        Button("显示全部") {
-                            showFullText = true
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.accentColor)
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.orange.opacity(0.08))
-                .cornerRadius(6)
-            }
-            
-            // Text Content Display using FastTextEditor (NSTextView)
-            FastTextEditor(text: displayText)
-                .padding(6)
-                .background(Color.primary.opacity(0.03))
-                .cornerRadius(8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-    
-    private func metricItem(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-            Text(value)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.primary)
-        }
-    }
-    
     private func copyTransformedText(_ text: String, notice: String) {
         ClipboardMonitor.shared.isSelfCopying = true
         let pb = NSPasteboard.general
@@ -330,464 +280,5 @@ public struct ClipDetailView: View {
         ClipboardMonitor.shared.syncChangeCount()
         SoundManager.shared.playCopy()
         onShowToast?(notice)
-    }
-    
-    private func transformButton(_ title: String, transform: @escaping () -> String) -> some View {
-        Button(action: {
-            let result = transform()
-            copyTransformedText(result, notice: "已复制「\(title)」结果")
-        }) {
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.05))
-                .cornerRadius(4)
-        }
-        .buttonStyle(.plain)
-    }
-    
-    // MARK: - Image Inspector (Displays crisp image preview, NEVER shows raw file path)
-    @ViewBuilder
-    private func imageView(for item: ClipItem) -> some View {
-        AsyncDetailImageContainer(
-            item: item,
-            onExport: { img in
-                exportImage(img)
-            }
-        )
-    }
-    
-    private func exportImage(_ image: NSImage) {
-        guard let tiffData = image.tiffRepresentation else { return }
-        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
-        let target = downloads.appendingPathComponent("LiquidClip_\(Int(Date().timeIntervalSince1970)).png")
-        let toastCallback = onShowToast
-        
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let rep = NSBitmapImageRep(data: tiffData),
-                  let png = rep.representation(using: .png, properties: [:]) else {
-                return
-            }
-            do {
-                try png.write(to: target, options: .atomic)
-                DispatchQueue.main.async {
-                    NSWorkspace.shared.activateFileViewerSelecting([target])
-                    toastCallback?("已保存到下载文件夹")
-                }
-            } catch {
-                print("Failed to export image: \(error)")
-            }
-        }
-    }
-    
-    // MARK: - Color Inspector
-    @ViewBuilder
-    private func colorView(for item: ClipItem) -> some View {
-        if let hex = item.colorHex {
-            let (r, g, b, a) = ClipItem.hexToRGBA(hex)
-            let color = Color(red: Double(r)/255.0, green: Double(g)/255.0, blue: Double(b)/255.0, opacity: a)
-            
-            VStack(spacing: 14) {
-                // Large color disc / card
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(color)
-                    .frame(height: 90)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                    )
-                    .shadow(color: color.opacity(0.4), radius: 10, y: 5)
-                
-                // Format copiers
-                VStack(spacing: 6) {
-                    colorCopyRow(label: "HEX", value: hex)
-                    colorCopyRow(label: "RGB", value: "rgb(\(r), \(g), \(b))")
-                    if a < 1.0 {
-                        colorCopyRow(label: "RGBA", value: String(format: "rgba(%d, %d, %d, %.2f)", r, g, b, a))
-                        colorCopyRow(label: "SwiftUI", value: String(format: "Color(red: %.2f, green: %.2f, blue: %.2f, opacity: %.2f)", Double(r)/255, Double(g)/255, Double(b)/255, a))
-                    } else {
-                        colorCopyRow(label: "SwiftUI", value: "Color(red: \(String(format: "%.2f", Double(r)/255)), green: \(String(format: "%.2f", Double(g)/255)), blue: \(String(format: "%.2f", Double(b)/255)))")
-                    }
-                }
-            }
-        }
-    }
-    
-    private func colorCopyRow(label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(.secondary)
-                .frame(width: 50, alignment: .leading)
-            
-            Text(value)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.primary)
-                .lineLimit(1)
-            
-            Spacer()
-            
-            Button(action: {
-                copyTransformedText(value, notice: "已复制 \(label): \(value)")
-            }) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .padding(4)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(6)
-    }
-    
-    // MARK: - URL Inspector
-    @ViewBuilder
-    private func urlView(for item: ClipItem) -> some View {
-        let raw = item.plainText ?? ""
-        let url = URL(string: raw)
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "globe")
-                    .foregroundColor(.teal)
-                Text(url?.host ?? "网页链接")
-                    .font(.system(size: 14, weight: .semibold))
-            }
-            
-            Text(raw)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(.secondary)
-                .textSelection(.enabled)
-            
-            if let url = url {
-                Button(action: {
-                    NSWorkspace.shared.open(url)
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "safari")
-                        Text("在默认浏览器中打开")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.teal)
-                    .cornerRadius(8)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-    
-    // MARK: - File Inspector
-    @ViewBuilder
-    private func fileView(for item: ClipItem) -> some View {
-        if let paths = item.filePaths {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(paths, id: \.self) { path in
-                    let url = URL(fileURLWithPath: path)
-                    let ext = url.pathExtension.lowercased()
-                    let isImg = ["png", "jpg", "jpeg", "webp", "gif", "tiff", "tif", "heic", "heif", "svg", "bmp", "ico"].contains(ext)
-                    
-                    if isImg {
-                        AsyncFileImageCard(path: path)
-                    } else {
-                        // Non-image file: Shows filename & location info (never dumps raw path)
-                        HStack(spacing: 8) {
-                            Image(nsImage: NSWorkspace.shared.icon(forFile: path))
-                                .resizable()
-                                .frame(width: 24, height: 24)
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(url.lastPathComponent)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .lineLimit(1)
-                                Text(url.deletingLastPathComponent().lastPathComponent)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                            }
-                            
-                            Spacer()
-                            
-                            Button(action: {
-                                NSWorkspace.shared.activateFileViewerSelecting([url])
-                            }) {
-                                Text("在访达中显示")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .background(Color.primary.opacity(0.06))
-                                    .cornerRadius(4)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(8)
-                        .background(Color.primary.opacity(0.03))
-                        .cornerRadius(6)
-                    }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - High-performance NSTextView wrapper for large text inspection
-public struct FastTextEditor: NSViewRepresentable {
-    public let text: String
-
-    public init(text: String) {
-        self.text = text
-    }
-
-    public func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.drawsBackground = false
-        scrollView.borderType = .noBorder
-        scrollView.scrollerStyle = .overlay
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-
-        let textView = NSTextView()
-        textView.layoutManager?.allowsNonContiguousLayout = true
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.drawsBackground = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textColor = NSColor.textColor
-        textView.textContainerInset = NSSize(width: 4, height: 4)
-        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = true
-        textView.string = text
-
-        scrollView.documentView = textView
-        return scrollView
-    }
-
-    public func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        if let tv = scrollView.documentView as? NSTextView {
-            if tv.string != text {
-                tv.string = text
-                tv.scroll(NSPoint.zero)
-            }
-        }
-    }
-}
-
-// MARK: - Async Image Inspector Containers
-
-private struct AsyncDetailImageContainer: View {
-    let item: ClipItem
-    let onExport: (NSImage) -> Void
-    @State private var image: NSImage?
-    @State private var isLoading: Bool = false
-    
-    init(item: ClipItem, onExport: @escaping (NSImage) -> Void) {
-        self.item = item
-        self.onExport = onExport
-        _image = State(initialValue: item.cachedPrimaryImage())
-    }
-    
-    var body: some View {
-        let resolvedImage = image ?? item.cachedPrimaryImage()
-        let width = item.imageWidth ?? Double(resolvedImage?.size.width ?? 0)
-        let height = item.imageHeight ?? Double(resolvedImage?.size.height ?? 0)
-        
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "photo.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(.purple)
-                
-                if width > 0 && height > 0 {
-                    Text("分辨率: \(Int(width)) × \(Int(height)) 像素")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.primary)
-                } else {
-                    Text("剪贴板图片")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.primary)
-                }
-                
-                if let first = item.filePaths?.first {
-                    let ext = (first as NSString).pathExtension.uppercased()
-                    if !ext.isEmpty {
-                        Text(ext)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.purple)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.12))
-                            .cornerRadius(4)
-                    }
-                }
-                
-                Spacer()
-            }
-            
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.black.opacity(0.08))
-                
-                if let img = resolvedImage {
-                    Image(nsImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: 310)
-                        .cornerRadius(8)
-                        .shadow(color: Color.black.opacity(0.15), radius: 6, y: 3)
-                } else if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    VStack(spacing: 6) {
-                        Image(systemName: "photo")
-                            .font(.system(size: 24))
-                            .foregroundColor(.secondary.opacity(0.5))
-                        Text("无法加载图片")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 320)
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
-            )
-            
-            HStack(spacing: 8) {
-                if let img = resolvedImage {
-                    Button(action: {
-                        onExport(img)
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.system(size: 11))
-                            Text("保存到下载文件夹")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.primary.opacity(0.06))
-                        .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                }
-                
-                if let path = item.filePaths?.first, FileManager.default.fileExists(atPath: path) {
-                    FinderRevealButton(url: URL(fileURLWithPath: path))
-                }
-            }
-        }
-        .task(id: item.id) {
-            if let cached = item.cachedPrimaryImage() {
-                image = cached
-                isLoading = false
-                return
-            }
-            image = nil
-            isLoading = true
-            let loaded = await item.loadPrimaryImageAsync()
-            if !Task.isCancelled {
-                image = loaded
-                isLoading = false
-            }
-        }
-    }
-}
-
-private struct FinderRevealButton: View {
-    let url: URL
-    var compact: Bool = false
-    
-    var body: some View {
-        Button(action: {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }) {
-            HStack(spacing: compact ? 4 : 5) {
-                Image(systemName: "folder")
-                    .font(.system(size: 11))
-                Text("在访达中定位")
-                    .font(.system(size: 11, weight: compact ? .regular : .medium))
-            }
-            .padding(.horizontal, compact ? 8 : 10)
-            .padding(.vertical, compact ? 4 : 6)
-            .background(Color.primary.opacity(0.06))
-            .cornerRadius(6)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct AsyncFileImageCard: View {
-    let path: String
-    @State private var image: NSImage?
-    
-    init(path: String) {
-        self.path = path
-        _image = State(initialValue: StorageManager.shared.cachedImage(fromFilePath: path))
-    }
-    
-    var body: some View {
-        let url = URL(fileURLWithPath: path)
-        let resolvedImage = image ?? StorageManager.shared.cachedImage(fromFilePath: path)
-        
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(url.lastPathComponent)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                Spacer()
-                if let img = resolvedImage {
-                    Text("\(Int(img.size.width)) × \(Int(img.size.height))")
-                        .font(.system(size: 11, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            if let img = resolvedImage {
-                Image(nsImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxHeight: 280)
-                    .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.15), lineWidth: 0.5))
-            } else {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.black.opacity(0.06))
-                        .frame(height: 160)
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-            
-            HStack {
-                FinderRevealButton(url: url, compact: true)
-            }
-        }
-        .padding(10)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(8)
-        .task(id: path) {
-            if let cached = StorageManager.shared.cachedImage(fromFilePath: path) {
-                image = cached
-                return
-            }
-            image = nil
-            let loaded = await StorageManager.shared.loadImageAsync(fromFilePath: path)
-            if !Task.isCancelled {
-                image = loaded
-            }
-        }
     }
 }

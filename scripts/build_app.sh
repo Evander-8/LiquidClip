@@ -28,6 +28,7 @@ swiftc -O \
     -module-cache-path /tmp/cache \
     -parse-as-library \
     -target arm64-apple-macos14.0 \
+    -lsqlite3 \
     ${SWIFT_SOURCES} \
     -o "${MACOS_DIR}/${APP_NAME}"
 

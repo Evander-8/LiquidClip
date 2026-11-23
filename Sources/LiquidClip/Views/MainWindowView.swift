@@ -1,6 +1,6 @@
 /**
- * [INPUT]: 依赖 StorageManager、AppSettings、UpdateChecker、PasteSimulator、SoundManager 与子视图组件
- * [OUTPUT]: 提供主窗口根视图 MainWindowView，管理搜索筛选、分组导航、键盘交互与浮层调度
+ * [INPUT]: 依赖 MainWindowViewModel、StorageManager、AppSettings、UpdateChecker、PasteSimulator 与各子视图组件
+ * [OUTPUT]: 提供主窗口根视图 MainWindowView，负责液态玻璃布局呈现与事件绑定
  * [POS]: 应用核心 UI 容器，被 AppDelegate 挂载于 FloatingPanel 的 NSHostingView 中
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -12,19 +12,7 @@ public struct MainWindowView: View {
     @ObservedObject private var storage = StorageManager.shared
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var updateChecker = UpdateChecker.shared
-
-    @State private var searchText: String = ""
-    @State private var selectedFilter: ClipFilter = .all
-    @State private var selectedGroupId: UUID? = nil
-    @State private var selectedItemId: UUID? = nil
-    @State private var keyboardScrollTarget: UUID? = nil
-    @State private var showSettings: Bool = false
-    @State private var showNewGroupModal: Bool = false
-    @State private var toastMessage: String? = nil
-    @State private var dismissedUpdateVersion: String? = nil
-    @State private var panelShowToken: Int = 0
-    @State private var isAccessibilityGranted: Bool = PasteSimulator.shared.isAccessibilityTrusted
-    @State private var dismissedAccessibilityBanner: Bool = false
+    @StateObject private var viewModel = MainWindowViewModel()
     
     public var onClose: () -> Void
     public var registerKeyHandler: ((@escaping (NSEvent) -> Bool) -> Void)?
@@ -34,74 +22,18 @@ public struct MainWindowView: View {
         self.registerKeyHandler = registerKeyHandler
     }
     
-    // Filtered items based on search query, category filter and custom group
-    private func computeFilteredItems(filter: ClipFilter, groupId: UUID?, search: String) -> [ClipItem] {
-        var list = storage.items
-        
-        if let gId = groupId {
-            list = list.filter { $0.groupId == gId }
-        } else {
-            switch filter {
-            case .all:
-                break
-            case .text:
-                list = list.filter { $0.type == .text }
-            case .image:
-                list = list.filter { $0.type == .image }
-            case .color:
-                list = list.filter { $0.type == .color }
-            case .url:
-                list = list.filter { $0.type == .url }
-            case .file:
-                list = list.filter { $0.type == .file }
-            case .pinned:
-                list = list.filter { $0.isPinned }
-            }
-        }
-        
-        if !search.isEmpty {
-            list = list.filter { $0.matches(query: search) }
-        }
-        
-        return list
-    }
-    
-    private var filteredItems: [ClipItem] {
-        computeFilteredItems(filter: selectedFilter, groupId: selectedGroupId, search: searchText)
-    }
-    
-    private func currentSelectedItem(in items: [ClipItem]) -> ClipItem? {
-        if let id = selectedItemId, let found = items.first(where: { $0.id == id }) {
-            return found
-        }
-        return items.first
-    }
-    
-    // Currently selected item by UUID (immune to index shifts)
-    private var currentSelectedItem: ClipItem? {
-        currentSelectedItem(in: filteredItems)
-    }
-    
     public var body: some View {
-        let currentItems = filteredItems
-        let selectedItem = currentSelectedItem(in: currentItems)
+        let currentItems = viewModel.filteredItems(from: storage.items)
+        let selectedItem = viewModel.currentSelectedItem(in: currentItems)
         let currentId = selectedItem?.id
-        
-        // Single-pass aggregation for group item counts and pinned count
-        var computedGroupCounts: [UUID: Int] = [:]
-        var computedPinnedCount = 0
-        for item in storage.items {
-            if item.isPinned { computedPinnedCount += 1 }
-            if let gId = item.groupId { computedGroupCounts[gId, default: 0] += 1 }
-        }
-        let groupMap = Dictionary(uniqueKeysWithValues: storage.groups.map { ($0.id, $0) })
+        let metrics = viewModel.summaryMetrics(for: storage.items, groups: storage.groups)
         
         return ZStack {
             // Native Frosted Liquid Glass Background
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, state: .active)
                 .edgesIgnoringSafeArea(.all)
             
-            // Specular reflection gradient at the top edge (liquid sheen)
+            // Specular reflection gradient at the top edge
             VStack {
                 LinearGradient(
                     stops: [
@@ -118,204 +50,34 @@ public struct MainWindowView: View {
             .edgesIgnoringSafeArea(.all)
             
             VStack(spacing: 0) {
-                // MARK: - Update Available Banner
-                if let version = updateChecker.latestVersion, dismissedUpdateVersion != version {
-                    Button {
-                        if let url = updateChecker.latestReleaseURL {
-                            NSWorkspace.shared.open(url)
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundColor(.green)
-                            Text("发现新版本 \(version) — 点击前往下载")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.green)
-                            Spacer()
-                            Button(action: { dismissedUpdateVersion = version }) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.secondary.opacity(0.7))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 7)
-                        .background(Color.green.opacity(0.10))
-                    }
-                    .buttonStyle(.plain)
-                    .help("前往 GitHub Releases 下载新版本")
-                }
-
-                // MARK: - Accessibility Permission Hint Banner
-                if settings.autoPasteOnSelect && !isAccessibilityGranted && !dismissedAccessibilityBanner {
-                    HStack(spacing: 8) {
-                        Image(systemName: "hand.raised.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(.orange)
-                        Text("未开启辅助功能权限，选中记录将仅复制（需手动 ⌘V 粘贴）")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.primary.opacity(0.9))
-                        Spacer()
-                        Button("去授权") {
-                            PasteSimulator.shared.openAccessibilitySettings()
-                        }
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2.5)
-                        .background(Color.orange.opacity(0.16))
-                        .cornerRadius(5)
-                        .buttonStyle(.plain)
-                        
-                        Button(action: { dismissedAccessibilityBanner = true }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.secondary.opacity(0.7))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
-                    .background(Color.orange.opacity(0.10))
-                }
-
-                // MARK: - Top Liquid Search & Filter Bar
-                VStack(spacing: 10) {
-                    HStack(spacing: 10) {
-                        // Liquid Search Box
-                        LiquidSearchBar(text: $searchText, focusTrigger: panelShowToken)
-                            .onChange(of: searchText) {
-                                selectedItemId = filteredItems.first?.id
-                            }
-                        
-                        // Settings Button
-                        GlassIconButton(icon: "gearshape", size: 30) {
-                            showSettings = true
-                        }
-                        .help("偏好设置")
-                        
-                        // Close Button
-                        GlassIconButton(icon: "xmark", size: 30) {
-                            showSettings = false
-                            showNewGroupModal = false
-                            onClose()
-                        }
-                        .help("关闭窗口 (Esc)")
-                    }
-                    
-                    // Filter Pills & Custom Group Pills
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(ClipFilter.allCases) { filter in
-                                filterPill(filter)
-                            }
-                            
-                            Divider()
-                                .frame(height: 16)
-                                .opacity(0.4)
-                                .padding(.horizontal, 2)
-                            
-                            // Custom Groups
-                            ForEach(storage.groups) { group in
-                                groupPill(group, count: computedGroupCounts[group.id, default: 0])
-                            }
-                            
-                            // Add Group Button
-                            Button(action: { showNewGroupModal = true }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "plus")
-                                        .font(.system(size: 9, weight: .bold))
-                                    Text("分组")
-                                        .font(.system(size: 11, weight: .medium))
-                                }
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4.5)
-                                .background(Color.primary.opacity(0.04))
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .help("新建自定义分组 (防清理保护)")
-                        }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
+                updateBanner
+                accessibilityBanner
+                topBar(currentItems: currentItems)
                 
                 Divider().opacity(0.35)
                 
-                // MARK: - Center Split Area
+                // Center Split Area
                 HStack(spacing: 0) {
-                    // Left Column: Clips List
-                    VStack(spacing: 0) {
-                        if currentItems.isEmpty {
-                            emptyStateView
-                        } else {
-                            ScrollViewReader { proxy in
-                                ScrollView(.vertical, showsIndicators: false) {
-                                    LazyVStack(spacing: 4) {
-                                        ForEach(Array(currentItems.enumerated()), id: \.element.id) { idx, item in
-                                            ClipRowView(
-                                                item: item,
-                                                index: idx,
-                                                isSelected: item.id == currentId,
-                                                showShortcuts: settings.showShortcutsInList,
-                                                group: item.groupId.flatMap { groupMap[$0] },
-                                                refreshTick: panelShowToken,
-                                                onSelect: {
-                                                    selectedItemId = item.id
-                                                },
-                                                onPaste: {
-                                                    triggerPaste(item: item)
-                                                },
-                                                onTogglePin: {
-                                                    storage.togglePin(id: item.id)
-                                                },
-                                                onDelete: {
-                                                    deleteItem(item: item)
-                                                }
-                                            )
-                                            .equatable()
-                                            .id(item.id)
-                                        }
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 8)
-                                }
-                                .onChange(of: keyboardScrollTarget) { _, targetId in
-                                    if let id = targetId {
-                                        withAnimation(.easeInOut(duration: 0.12)) {
-                                            proxy.scrollTo(id, anchor: nil)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .frame(width: 330)
+                    leftListColumn(currentItems: currentItems, currentId: currentId, groupMap: metrics.groupMap)
+                        .frame(width: 330)
                     
                     Divider().opacity(0.35)
                     
-                    // Right Column: Liquid Inspector
                     ClipDetailView(
                         item: selectedItem,
                         onPaste: {
                             if let item = selectedItem {
-                                triggerPaste(item: item)
+                                viewModel.triggerPaste(item: item, onClose: onClose)
+                            }
+                        },
+                        onPastePlainText: {
+                            if let item = selectedItem {
+                                viewModel.triggerPaste(item: item, plainTextOnly: true, onClose: onClose)
                             }
                         },
                         onCopy: {
                             if let item = selectedItem {
-                                PasteSimulator.shared.copyToPasteboard(item: item)
-                                SoundManager.shared.playCopy()
-                                showToast("已复制到剪贴板")
+                                viewModel.copyItem(item)
                             }
                         },
                         onTogglePin: {
@@ -325,11 +87,11 @@ public struct MainWindowView: View {
                         },
                         onDelete: {
                             if let item = selectedItem {
-                                deleteItem(item: item)
+                                viewModel.deleteItem(item, in: currentItems)
                             }
                         },
                         onShowToast: { msg in
-                            showToast(msg)
+                            viewModel.showToast(msg)
                         }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -338,66 +100,42 @@ public struct MainWindowView: View {
                 
                 Divider().opacity(0.35)
                 
-                // MARK: - Bottom Status & Keyboard Shortcuts Bar
-                HStack {
-                    // Item Count
-                    HStack(spacing: 4) {
-                        Text("\(currentItems.count) 条记录")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.secondary)
-                        
-                        if let gId = selectedGroupId, let g = groupMap[gId] {
-                            Text("• 分组: \(g.name)")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.accentColor)
-                        } else if computedPinnedCount > 0 {
-                            Text("• \(computedPinnedCount) 收藏")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.orange.opacity(0.9))
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    // Keyboard Hints
-                    HStack(spacing: 8) {
-                        hintBadge(key: "↵", label: "粘贴")
-                        hintBadge(key: "1-9", label: "直达")
-                        hintBadge(key: "⌘P", label: "收藏")
-                        hintBadge(key: "⌫", label: "删除")
-                        hintBadge(key: "Esc", label: "关闭")
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.primary.opacity(0.02))
+                bottomStatusBar(
+                    count: currentItems.count,
+                    pinnedCount: metrics.pinnedCount,
+                    groupMap: metrics.groupMap
+                )
             }
             
             // Settings Modal Overlay
-            if showSettings {
+            if viewModel.showSettings {
                 Color.black.opacity(0.4)
                     .edgesIgnoringSafeArea(.all)
-                    .onTapGesture { showSettings = false }
+                    .onTapGesture { viewModel.showSettings = false }
                 
-                SettingsView(onClose: { showSettings = false })
+                SettingsView(onClose: { viewModel.showSettings = false })
                     .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
             
-            // New Group Modal Overlay
-            if showNewGroupModal {
+            // New / Edit Group Modal Overlay
+            if viewModel.showNewGroupModal {
                 Color.black.opacity(0.4)
                     .edgesIgnoringSafeArea(.all)
-                    .onTapGesture { showNewGroupModal = false }
+                    .onTapGesture { viewModel.closeGroupModal() }
                 
-                NewGroupModal(onClose: { showNewGroupModal = false }, onCreated: { newGroup in
-                    selectedGroupId = newGroup.id
-                    selectedItemId = filteredItems.first?.id
-                })
+                NewGroupModal(
+                    editingGroup: viewModel.editingGroup,
+                    onClose: { viewModel.closeGroupModal() },
+                    onCreated: { newGroup in
+                        viewModel.selectedGroupId = newGroup.id
+                        viewModel.selectedItemId = viewModel.filteredItems(from: storage.items).first?.id
+                    }
+                )
                 .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
             
             // Toast Notification
-            if let msg = toastMessage {
+            if let msg = viewModel.toastMessage {
                 VStack {
                     Spacer()
                     HStack(spacing: 8) {
@@ -408,13 +146,9 @@ public struct MainWindowView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(
-                        VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, state: .active)
-                    )
+                    .background(VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, state: .active))
                     .clipShape(Capsule())
-                    .overlay(
-                        Capsule().stroke(Color.white.opacity(0.2), lineWidth: 1)
-                    )
+                    .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 1))
                     .shadow(color: Color.black.opacity(0.2), radius: 10)
                     .padding(.bottom, 45)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -439,39 +173,248 @@ public struct MainWindowView: View {
                 )
         )
         .onAppear {
-            if selectedItemId == nil {
-                selectedItemId = filteredItems.first?.id
+            if viewModel.selectedItemId == nil {
+                viewModel.selectedItemId = viewModel.filteredItems(from: storage.items).first?.id
             }
-            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
+            viewModel.refreshAccessibility()
             registerKeyHandler? { event in
-                handleKeyEvent(event)
+                viewModel.handleKeyEvent(event, onClose: onClose)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .floatingPanelDidHide)) { _ in
-            showSettings = false
-            showNewGroupModal = false
+            viewModel.onPanelDidHide()
         }
         .onReceive(NotificationCenter.default.publisher(for: .floatingPanelWillShow)) { _ in
-            showSettings = false
-            showNewGroupModal = false
-            panelShowToken &+= 1
-            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
+            viewModel.onPanelWillShow()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            isAccessibilityGranted = PasteSimulator.shared.isAccessibilityTrusted
+            viewModel.refreshAccessibility()
         }
     }
     
-    // Filter Pill Button
+    // MARK: - Subviews
+    
+    @ViewBuilder
+    private var updateBanner: some View {
+        if let version = updateChecker.latestVersion, viewModel.dismissedUpdateVersion != version {
+            Button {
+                if let url = updateChecker.latestReleaseURL {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.green)
+                    Text("发现新版本 \(version) — 点击前往下载")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.green)
+                    Spacer()
+                    Button(action: { viewModel.dismissedUpdateVersion = version }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 7)
+                .background(Color.green.opacity(0.10))
+            }
+            .buttonStyle(.plain)
+            .help("前往 GitHub Releases 下载新版本")
+        }
+    }
+    
+    @ViewBuilder
+    private var accessibilityBanner: some View {
+        if settings.autoPasteOnSelect && !viewModel.isAccessibilityGranted && !viewModel.dismissedAccessibilityBanner {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                Text("未开启辅助功能权限，选中记录将仅复制（需手动 ⌘V 粘贴）")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary.opacity(0.9))
+                Spacer()
+                Button("去授权") {
+                    PasteSimulator.shared.openAccessibilitySettings()
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2.5)
+                .background(Color.orange.opacity(0.16))
+                .cornerRadius(5)
+                .buttonStyle(.plain)
+                
+                Button(action: { viewModel.dismissedAccessibilityBanner = true }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.secondary.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .background(Color.orange.opacity(0.10))
+        }
+    }
+    
+    @ViewBuilder
+    private func topBar(currentItems: [ClipItem]) -> some View {
+        let metrics = viewModel.summaryMetrics(for: storage.items, groups: storage.groups)
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                LiquidSearchBar(text: $viewModel.searchText, focusTrigger: viewModel.panelShowToken)
+                    .onChange(of: viewModel.searchText) {
+                        viewModel.selectedItemId = viewModel.filteredItems(from: storage.items).first?.id
+                    }
+                
+                GlassIconButton(icon: "gearshape", size: 30) {
+                    viewModel.showSettings = true
+                }
+                .help("偏好设置")
+                
+                GlassIconButton(icon: "xmark", size: 30) {
+                    viewModel.showSettings = false
+                    viewModel.closeGroupModal()
+                    onClose()
+                }
+                .help("关闭窗口 (Esc)")
+            }
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(ClipFilter.allCases) { filter in
+                        filterPill(filter)
+                    }
+                    
+                    Divider()
+                        .frame(height: 16)
+                        .opacity(0.4)
+                        .padding(.horizontal, 2)
+                    
+                    ForEach(storage.groups) { group in
+                        groupPill(group, count: metrics.groupCounts[group.id, default: 0])
+                    }
+                    
+                    Button(action: { viewModel.openNewGroupModal() }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 9, weight: .bold))
+                            Text("分组")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4.5)
+                        .background(Color.primary.opacity(0.04))
+                        .cornerRadius(12)
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                    .help("新建自定义分组 (防清理保护)")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+    }
+    
+    @ViewBuilder
+    private func leftListColumn(currentItems: [ClipItem], currentId: UUID?, groupMap: [UUID: ClipGroup]) -> some View {
+        VStack(spacing: 0) {
+            if currentItems.isEmpty {
+                emptyStateView
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 4) {
+                            ForEach(Array(currentItems.enumerated()), id: \.element.id) { idx, item in
+                                ClipRowView(
+                                    item: item,
+                                    index: idx,
+                                    isSelected: item.id == currentId,
+                                    showShortcuts: settings.showShortcutsInList,
+                                    group: item.groupId.flatMap { groupMap[$0] },
+                                    refreshTick: viewModel.panelShowToken,
+                                    onSelect: {
+                                        viewModel.selectedItemId = item.id
+                                    },
+                                    onPaste: {
+                                        viewModel.triggerPaste(item: item, onClose: onClose)
+                                    },
+                                    onPastePlainText: {
+                                        viewModel.triggerPaste(item: item, plainTextOnly: true, onClose: onClose)
+                                    },
+                                    onTogglePin: {
+                                        storage.togglePin(id: item.id)
+                                    },
+                                    onDelete: {
+                                        viewModel.deleteItem(item, in: currentItems)
+                                    }
+                                )
+                                .equatable()
+                                .id(item.id)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                    }
+                    .onChange(of: viewModel.keyboardScrollTarget) { _, targetId in
+                        if let id = targetId {
+                            withAnimation(.easeInOut(duration: 0.12)) {
+                                proxy.scrollTo(id, anchor: nil)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func bottomStatusBar(count: Int, pinnedCount: Int, groupMap: [UUID: ClipGroup]) -> some View {
+        HStack {
+            HStack(spacing: 4) {
+                Text("\(count) 条记录")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                
+                if let gId = viewModel.selectedGroupId, let g = groupMap[gId] {
+                    Text("• 分组: \(g.name)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.accentColor)
+                } else if pinnedCount > 0 {
+                    Text("• \(pinnedCount) 收藏")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.orange.opacity(0.9))
+                }
+            }
+            
+            Spacer()
+            
+            HStack(spacing: 8) {
+                hintBadge(key: "↵", label: "粘贴")
+                hintBadge(key: "⇧↵", label: "纯文本")
+                hintBadge(key: "1-9", label: "直达")
+                hintBadge(key: "⌘P", label: "收藏")
+                hintBadge(key: "⌫", label: "删除")
+                hintBadge(key: "Esc", label: "关闭")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.02))
+    }
+    
     @ViewBuilder
     private func filterPill(_ filter: ClipFilter) -> some View {
-        let isSelected = selectedFilter == filter && selectedGroupId == nil
+        let isSelected = viewModel.selectedFilter == filter && viewModel.selectedGroupId == nil
         Button(action: {
-            selectedFilter = filter
-            selectedGroupId = nil
-            let newItems = computeFilteredItems(filter: filter, groupId: nil, search: searchText)
-            selectedItemId = newItems.first?.id
-            keyboardScrollTarget = newItems.first?.id
+            viewModel.selectFilter(filter)
         }) {
             HStack(spacing: 4) {
                 Image(systemName: filter.iconName)
@@ -482,29 +425,18 @@ public struct MainWindowView: View {
             .foregroundColor(isSelected ? .white : .secondary)
             .padding(.horizontal, 9)
             .padding(.vertical, 4.5)
-            .background(
-                Capsule()
-                    .fill(isSelected ? Color.accentColor : Color.primary.opacity(0.04))
-            )
-            .overlay(
-                Capsule()
-                    .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 0.5)
-            )
+            .background(Capsule().fill(isSelected ? Color.accentColor : Color.primary.opacity(0.04)))
+            .overlay(Capsule().stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.15), value: isSelected)
     }
     
-    // Group Pill Button
     @ViewBuilder
     private func groupPill(_ group: ClipGroup, count: Int) -> some View {
-        let isSelected = selectedGroupId == group.id
+        let isSelected = viewModel.selectedGroupId == group.id
         Button(action: {
-            let nextGroupId = (selectedGroupId == group.id) ? nil : group.id
-            selectedGroupId = nextGroupId
-            let newItems = computeFilteredItems(filter: selectedFilter, groupId: nextGroupId, search: searchText)
-            selectedItemId = newItems.first?.id
-            keyboardScrollTarget = newItems.first?.id
+            viewModel.toggleGroupSelection(group)
         }) {
             HStack(spacing: 4) {
                 Image(systemName: group.icon)
@@ -523,22 +455,22 @@ public struct MainWindowView: View {
             .foregroundColor(isSelected ? .white : .primary)
             .padding(.horizontal, 9)
             .padding(.vertical, 4.5)
-            .background(
-                Capsule()
-                    .fill(isSelected ? Color.accentColor : Color.primary.opacity(0.06))
-            )
-            .overlay(
-                Capsule()
-                    .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.white.opacity(0.12), lineWidth: 0.5)
-            )
+            .background(Capsule().fill(isSelected ? Color.accentColor : Color.primary.opacity(0.06)))
+            .overlay(Capsule().stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.white.opacity(0.12), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.15), value: isSelected)
         .contextMenu {
+            Button(action: {
+                viewModel.openEditGroupModal(group)
+            }) {
+                Label("编辑分组 \"\(group.name)\"", systemImage: "pencil")
+            }
+            Divider()
             Button(role: .destructive, action: {
                 storage.deleteGroup(id: group.id)
-                if selectedGroupId == group.id {
-                    selectedGroupId = nil
+                if viewModel.selectedGroupId == group.id {
+                    viewModel.selectedGroupId = nil
                 }
             }) {
                 Label("删除分组 \"\(group.name)\"", systemImage: "trash")
@@ -546,17 +478,16 @@ public struct MainWindowView: View {
         }
     }
     
-    // Empty state graphic
     @ViewBuilder
     private var emptyStateView: some View {
         VStack(spacing: 12) {
             Image(systemName: "tray")
                 .font(.system(size: 36))
                 .foregroundColor(.secondary.opacity(0.4))
-            Text(searchText.isEmpty ? "剪贴板历史为空" : "没有找到匹配的记录")
+            Text(viewModel.searchText.isEmpty ? "剪贴板历史为空" : "没有找到匹配的记录")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.secondary)
-            Text(searchText.isEmpty ? "复制任意文本、图片或文件后将自动显示在这里" : "换个搜索关键字试试")
+            Text(viewModel.searchText.isEmpty ? "复制任意文本、图片或文件后将自动显示在这里" : "换个搜索关键字试试")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary.opacity(0.7))
         }
@@ -564,7 +495,6 @@ public struct MainWindowView: View {
         .padding(20)
     }
     
-    // Keyboard Hint Pill
     @ViewBuilder
     private func hintBadge(key: String, label: String) -> some View {
         HStack(spacing: 3) {
@@ -573,147 +503,5 @@ public struct MainWindowView: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
         }
-    }
-    
-    // Trigger Paste
-    private func triggerPaste(item: ClipItem) {
-        let success = PasteSimulator.shared.paste(item: item, closeAction: onClose)
-        if !success {
-            showToast("已复制到剪贴板，按 ⌘V 粘贴 (开启辅助功能可自动粘贴)")
-        }
-    }
-    
-    // Delete item
-    private func deleteItem(item: ClipItem) {
-        let items = filteredItems
-        if let idx = items.firstIndex(where: { $0.id == item.id }) {
-            if items.count > 1 {
-                if idx < items.count - 1 {
-                    selectedItemId = items[idx + 1].id
-                } else if idx > 0 {
-                    selectedItemId = items[idx - 1].id
-                }
-            } else {
-                selectedItemId = nil
-            }
-        }
-        
-        storage.deleteItem(id: item.id)
-        SoundManager.shared.playDelete()
-    }
-    
-    // Show Toast
-    private func showToast(_ message: String) {
-        withAnimation {
-            toastMessage = message
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            withAnimation {
-                if toastMessage == message {
-                    toastMessage = nil
-                }
-            }
-        }
-    }
-    
-    // Handle Window Key Events
-    private func handleKeyEvent(_ event: NSEvent) -> Bool {
-        // Escape (53): Close modal -> Clear search -> Close window
-        if event.keyCode == 53 {
-            if showSettings {
-                showSettings = false
-                return true
-            }
-            if showNewGroupModal {
-                showNewGroupModal = false
-                return true
-            }
-            if !searchText.isEmpty {
-                searchText = ""
-                return true
-            }
-            onClose()
-            return true
-        }
-        
-        // Do not intercept Enter, Backspace, arrows, or 1~9 while a modal overlay is open
-        if showSettings || showNewGroupModal {
-            return false
-        }
-        
-        let items = filteredItems
-        guard !items.isEmpty else {
-            return false
-        }
-        
-        let currentIdx = items.firstIndex(where: { $0.id == currentSelectedItem?.id }) ?? 0
-        
-        // Down Arrow (125)
-        if event.keyCode == 125 {
-            if currentIdx < items.count - 1 {
-                let nextId = items[currentIdx + 1].id
-                selectedItemId = nextId
-                keyboardScrollTarget = nextId
-            }
-            return true
-        }
-        
-        // Up Arrow (126)
-        if event.keyCode == 126 {
-            if currentIdx > 0 {
-                let prevId = items[currentIdx - 1].id
-                selectedItemId = prevId
-                keyboardScrollTarget = prevId
-            }
-            return true
-        }
-        
-        // Return / Enter (36)
-        if event.keyCode == 36 {
-            if let item = currentSelectedItem {
-                triggerPaste(item: item)
-                return true
-            }
-        }
-        
-        // Delete / Backspace (51)
-        if event.keyCode == 51 {
-            if searchText.isEmpty, let item = currentSelectedItem {
-                deleteItem(item: item)
-                return true
-            }
-        }
-        
-        // Command + P: Toggle Pin
-        if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "p" {
-            if let item = currentSelectedItem {
-                storage.togglePin(id: item.id)
-                return true
-            }
-        }
-        
-        // Command + C: Copy selected item
-        if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "c" {
-            if let item = currentSelectedItem {
-                PasteSimulator.shared.copyToPasteboard(item: item)
-                SoundManager.shared.playCopy()
-                showToast("已复制到剪贴板")
-                return true
-            }
-        }
-        
-        // Number Keys 1~9: Direct paste (only if not actively typing into search with numbers)
-        if let char = event.charactersIgnoringModifiers, let num = Int(char), num >= 1 && num <= 9 {
-            let targetIdx = num - 1
-            if targetIdx < items.count && !event.modifierFlags.contains(.command) {
-                if searchText.isEmpty {
-                    let targetItem = items[targetIdx]
-                    triggerPaste(item: targetItem)
-                    return true
-                }
-            }
-        }
-        
-        return false
     }
 }

@@ -1,14 +1,12 @@
 /**
- * [INPUT]: 依赖 ClipItem、ClipGroup、AppSettings 以及 Foundation / AppKit / ImageIO / CryptoKit
- * [OUTPUT]: 提供全局单例 StorageManager，负责剪贴板历史/分组持久化、隐私模式内存隔离、图像异步编解码与缓存、历史上限裁剪和孤儿图片回收
- * [POS]: 应用数据持久化与媒体存储中心，上承 ClipboardMonitor，下接全部 SwiftUI 视图
+ * [INPUT]: 依赖 SQLiteStore、ImageCacheStore、OCRService、ClipItem、ClipGroup 与 AppSettings
+ * [OUTPUT]: 提供全局单例 StorageManager，负责 SQLite3+FTS5 增量持久化、旧 JSON 无损迁移、隐私模式隔离与协调媒体缓存/OCR
+ * [POS]: 应用数据持久化与媒体存储协调中心，上承 ClipboardMonitor，下接 ViewModels 与视图层
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
 
 import Foundation
 import AppKit
-import ImageIO
-import CryptoKit
 
 @MainActor
 public class StorageManager: ObservableObject {
@@ -20,42 +18,27 @@ public class StorageManager: ObservableObject {
     private let appSupportURL: URL
     private let clipsFileURL: URL
     private let groupsFileURL: URL
+    private let dbFileURL: URL
     private let imagesFolderURL: URL
     private let queue = DispatchQueue(label: "com.liquidclip.storage", qos: .utility)
-    private var saveWorkItem: DispatchWorkItem?
+    private var sqliteStore: SQLiteStore?
+    private let imageStore: ImageCacheStore
     
-    // In-memory caching to eliminate redundant disk reads & image decompressions
-    private let imageCache = NSCache<NSString, NSImage>()
-    private let thumbnailCache = NSCache<NSString, NSImage>()
-    private var thumbnailKeysByImageName: [String: Set<String>] = [:]
-    
-    // Ephemeral privacy-mode state (kept purely in memory, never written to disk)
-    private var memoryImages: [String: NSImage] = [:]
+    // Ephemeral privacy-mode item IDs (kept purely in memory, never written to disk)
     private var ephemeralItemIds: Set<UUID> = []
     
-    private struct PreparedImage {
-        let pngData: Data
-        let width: Double
-        let height: Double
-        let sha256: String
-    }
-    
     private init() {
-        imageCache.countLimit = 60
-        imageCache.totalCostLimit = 80 * 1024 * 1024 // 80 MB
-        thumbnailCache.countLimit = 300
-        thumbnailCache.totalCostLimit = 20 * 1024 * 1024 // 20 MB
-        
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         self.appSupportURL = appSupport.appendingPathComponent("LiquidClip", isDirectory: true)
         self.clipsFileURL = appSupportURL.appendingPathComponent("clips.json")
         self.groupsFileURL = appSupportURL.appendingPathComponent("groups.json")
+        self.dbFileURL = appSupportURL.appendingPathComponent("liquidclip.db")
         self.imagesFolderURL = appSupportURL.appendingPathComponent("images", isDirectory: true)
+        self.imageStore = ImageCacheStore(imagesFolderURL: imagesFolderURL, queue: queue)
         
         createDirectoriesIfNeeded()
-        loadGroups()
-        loadItems()
+        loadInitialState()
     }
     
     private func createDirectoriesIfNeeded() {
@@ -64,57 +47,83 @@ public class StorageManager: ObservableObject {
         try? fm.createDirectory(at: imagesFolderURL, withIntermediateDirectories: true)
     }
     
-    // MARK: - Persistence
+    private var isPrivacyMode: Bool {
+        AppSettings.shared.privacyMode
+    }
+    
+    // MARK: - Persistence & One-Time JSON -> SQLite3 Migration
 
     /// Privacy mode semantics:
-    /// - Enable: pause all disk writes; new items & images stay strictly in memory without deleting existing groups/history.
-    /// - Disable: purge ephemeral session items & memory images, then resume persistence.
+    /// - Enable: pause all disk/SQLite writes; new items & images stay strictly in memory without deleting existing groups/history.
+    /// - Disable: purge ephemeral session items & memory images; persisted SQLite state remains intact.
     public func applyPrivacyMode(enabled: Bool) {
-        if enabled {
-            saveWorkItem?.cancel()
-            saveWorkItem = nil
-        } else {
+        if !enabled {
             if !ephemeralItemIds.isEmpty {
                 let toPurge = self.items.filter { ephemeralItemIds.contains($0.id) }
                 for item in toPurge {
                     if let imgName = item.imageFileName {
-                        purgeCachedImage(named: imgName)
+                        imageStore.purgeCachedImage(named: imgName)
                     }
                 }
                 self.items.removeAll { ephemeralItemIds.contains($0.id) }
                 ephemeralItemIds.removeAll()
             }
-            for imgName in Array(memoryImages.keys) {
-                purgeCachedImage(named: imgName)
+            imageStore.purgeAllMemoryImages()
+        }
+    }
+    
+    private func loadInitialState() {
+        let fm = FileManager.default
+        let dbExistedBefore = fm.fileExists(atPath: dbFileURL.path)
+        self.sqliteStore = SQLiteStore(databaseURL: dbFileURL)
+        
+        let hasLegacyJSON = fm.fileExists(atPath: clipsFileURL.path) ||
+                            fm.fileExists(atPath: clipsFileURL.appendingPathExtension("bak").path) ||
+                            fm.fileExists(atPath: groupsFileURL.path) ||
+                            fm.fileExists(atPath: groupsFileURL.appendingPathExtension("bak").path)
+        
+        if !dbExistedBefore && hasLegacyJSON {
+            let legacyGroups = loadLegacyGroups() ?? [ClipGroup(name: "常用记录", icon: "bookmark.fill")]
+            var legacyItems = loadLegacyItems() ?? []
+            for i in 0..<legacyItems.count {
+                legacyItems[i].populateCachedMetricsIfNeeded()
             }
-            memoryImages.removeAll()
-            scheduleSave()
+            self.groups = legacyGroups
+            self.items = legacyItems
+            sqliteStore?.replaceAll(groups: legacyGroups, clips: legacyItems)
+            archiveLegacyJSONFiles()
+            purgeOrphanedImageFiles()
+            return
+        }
+        
+        if let store = sqliteStore {
+            var loadedGroups = store.loadAllGroups()
+            if loadedGroups.isEmpty && !dbExistedBefore {
+                let defaultGroup = ClipGroup(name: "常用记录", icon: "bookmark.fill")
+                loadedGroups = [defaultGroup]
+                store.upsertGroup(defaultGroup)
+            }
+            self.groups = loadedGroups
+            
+            var loadedItems = store.loadAllClips()
+            for i in 0..<loadedItems.count {
+                loadedItems[i].populateCachedMetricsIfNeeded()
+            }
+            self.items = loadedItems
+            purgeOrphanedImageFiles()
         }
     }
 
-    public func loadItems() {
+    private func loadLegacyItems() -> [ClipItem]? {
         let backupURL = clipsFileURL.appendingPathExtension("bak")
-        var loadedSuccessfully = !FileManager.default.fileExists(atPath: clipsFileURL.path)
-        if var decoded = decodeItems(from: clipsFileURL) {
-            for i in 0..<decoded.count {
-                decoded[i].populateCachedMetricsIfNeeded()
-            }
-            self.items = decoded
-            loadedSuccessfully = true
+        if let decoded = decodeItems(from: clipsFileURL) {
+            return decoded
         } else if FileManager.default.fileExists(atPath: backupURL.path),
-                  var decoded = decodeItems(from: backupURL) {
-            // Primary file corrupt/incompatible — fall back to last known-good backup and heal.
-            for i in 0..<decoded.count {
-                decoded[i].populateCachedMetricsIfNeeded()
-            }
-            self.items = decoded
-            loadedSuccessfully = true
-            print("Loaded clips from backup after primary decode failure")
-            scheduleSave()
+                  let decoded = decodeItems(from: backupURL) {
+            print("Loaded legacy clips from backup during migration")
+            return decoded
         }
-        if loadedSuccessfully {
-            purgeOrphanedImageFiles()
-        }
+        return nil
     }
 
     private func decodeItems(from url: URL) -> [ClipItem]? {
@@ -128,22 +137,16 @@ public class StorageManager: ObservableObject {
         }
     }
 
-    public func loadGroups() {
+    private func loadLegacyGroups() -> [ClipGroup]? {
         let backupURL = groupsFileURL.appendingPathExtension("bak")
         if let decoded = decodeGroups(from: groupsFileURL) {
-            self.groups = decoded
+            return decoded
         } else if FileManager.default.fileExists(atPath: backupURL.path),
                   let decoded = decodeGroups(from: backupURL) {
-            self.groups = decoded
-            print("Loaded groups from backup after primary decode failure")
-            scheduleSave()
-        } else {
-            // Default initial groups if empty / unreadable
-            self.groups = [
-                ClipGroup(name: "常用记录", icon: "bookmark.fill")
-            ]
-            self.scheduleSave()
+            print("Loaded legacy groups from backup during migration")
+            return decoded
         }
+        return nil
     }
 
     private func decodeGroups(from url: URL) -> [ClipGroup]? {
@@ -156,55 +159,43 @@ public class StorageManager: ObservableObject {
             return nil
         }
     }
-
-    // Debounced save: snapshots on the main actor, encodes & writes OFF the main thread
-    // so large histories (500–1000 items with rich text) never hitch the UI.
-    public func scheduleSave() {
-        if AppSettings.shared.privacyMode { return }
-        saveWorkItem?.cancel()
-
-        let clipsSnapshot = self.items
-        let groupsSnapshot = self.groups
-        let targetClipsURL = self.clipsFileURL
-        let targetGroupsURL = self.groupsFileURL
-
-        let work = DispatchWorkItem {
-            if let clipsData = try? JSONEncoder().encode(clipsSnapshot) {
-                Self.rotateBackup(of: targetClipsURL)
-                try? clipsData.write(to: targetClipsURL, options: .atomic)
-            }
-            if let groupsData = try? JSONEncoder().encode(groupsSnapshot) {
-                Self.rotateBackup(of: targetGroupsURL)
-                try? groupsData.write(to: targetGroupsURL, options: .atomic)
-            }
-        }
-        saveWorkItem = work
-        queue.asyncAfter(deadline: .now() + 0.4, execute: work)
-    }
-
-    /// Keeps a one-generation `.bak` of the previously persisted file so a corrupt
-    /// or schema-incompatible primary file can be rolled back on next launch.
-    nonisolated private static func rotateBackup(of url: URL) {
+    
+    private func archiveLegacyJSONFiles() {
         let fm = FileManager.default
-        let backupURL = url.appendingPathExtension("bak")
-        guard fm.fileExists(atPath: url.path) else { return }
-        try? fm.removeItem(at: backupURL)
-        try? fm.copyItem(at: url, to: backupURL)
+        let targets = [
+            clipsFileURL,
+            clipsFileURL.appendingPathExtension("bak"),
+            groupsFileURL,
+            groupsFileURL.appendingPathExtension("bak")
+        ]
+        for url in targets where fm.fileExists(atPath: url.path) {
+            let archived = url.appendingPathExtension("migrated.bak")
+            try? fm.removeItem(at: archived)
+            try? fm.moveItem(at: url, to: archived)
+        }
     }
     
     /// Background garbage collection of orphaned image files not referenced by any stored ClipItem.
     private func purgeOrphanedImageFiles() {
         let referencedNames = Set(items.compactMap(\.imageFileName))
-        let folderURL = imagesFolderURL
-        queue.async {
-            let fm = FileManager.default
-            guard let files = try? fm.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil) else {
-                return
-            }
-            for fileURL in files where !referencedNames.contains(fileURL.lastPathComponent) {
-                try? fm.removeItem(at: fileURL)
+        imageStore.purgeOrphanedFiles(referencedNames: referencedNames)
+    }
+    
+    /// Hybrid FTS5 + memory search across persisted items and ephemeral privacy-mode items.
+    public func searchMatchingIds(query: String) -> Set<UUID> {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return Set(items.map(\.id))
+        }
+        var matched = sqliteStore?.searchClipIds(query: trimmed) ?? []
+        if isPrivacyMode || sqliteStore == nil {
+            for item in items where (sqliteStore == nil || ephemeralItemIds.contains(item.id)) {
+                if item.matches(query: trimmed) {
+                    matched.insert(item.id)
+                }
             }
         }
+        return matched
     }
     
     // MARK: - Group Management
@@ -214,8 +205,23 @@ public class StorageManager: ObservableObject {
         let finalName = trimmed.isEmpty ? "新建分组" : trimmed
         let newGroup = ClipGroup(name: finalName, icon: icon)
         self.groups.append(newGroup)
-        self.scheduleSave()
+        if !isPrivacyMode {
+            sqliteStore?.upsertGroup(newGroup)
+        }
         return newGroup
+    }
+    
+    public func updateGroup(id: UUID, name: String, icon: String) {
+        if let idx = self.groups.firstIndex(where: { $0.id == id }) {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                self.groups[idx].name = trimmed
+            }
+            self.groups[idx].icon = icon
+            if !isPrivacyMode {
+                sqliteStore?.upsertGroup(self.groups[idx])
+            }
+        }
     }
     
     public func renameGroup(id: UUID, newName: String) {
@@ -223,26 +229,31 @@ public class StorageManager: ObservableObject {
             let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 self.groups[idx].name = trimmed
-                self.scheduleSave()
+                if !isPrivacyMode {
+                    sqliteStore?.upsertGroup(self.groups[idx])
+                }
             }
         }
     }
     
     public func deleteGroup(id: UUID) {
         self.groups.removeAll { $0.id == id }
-        // Ungroup items that belonged to this group (retain in history)
         for i in 0..<self.items.count {
             if self.items[i].groupId == id {
                 self.items[i].groupId = nil
             }
         }
-        self.scheduleSave()
+        if !isPrivacyMode {
+            sqliteStore?.deleteGroup(id: id)
+        }
     }
     
     public func assignGroup(itemId: UUID, groupId: UUID?) {
         if let idx = self.items.firstIndex(where: { $0.id == itemId }) {
             self.items[idx].groupId = groupId
-            self.scheduleSave()
+            if !isPrivacyMode && !ephemeralItemIds.contains(itemId) {
+                sqliteStore?.updateClipGroup(id: itemId, groupId: groupId)
+            }
         }
     }
     
@@ -253,51 +264,68 @@ public class StorageManager: ObservableObject {
     
     // MARK: - Clip Items Management
     public func addClip(_ item: ClipItem) {
-        // Check for duplicate
         if let existingIndex = self.items.firstIndex(where: { $0.contentFingerprint == item.contentFingerprint }) {
             var existing = self.items.remove(at: existingIndex)
             existing.updatedAt = Date()
             existing.createdAt = Date() // Move to top
             self.items.insert(existing, at: 0)
+            if !isPrivacyMode && !ephemeralItemIds.contains(existing.id) {
+                sqliteStore?.upsertClip(existing)
+            }
         } else {
-            if AppSettings.shared.privacyMode {
+            if isPrivacyMode {
                 ephemeralItemIds.insert(item.id)
+            } else {
+                sqliteStore?.upsertClip(item)
             }
             self.items.insert(item, at: 0)
         }
         
         self.enforceHistoryLimit()
-        self.scheduleSave()
     }
     
     // Enforce history limit for transient unpinned items ONLY
     // Items that are PINNED or in a CUSTOM GROUP are NEVER automatically removed!
     public func enforceHistoryLimit() {
         let maxCount = AppSettings.shared.maxHistoryCount
-        // Protected: Pinned items OR items in a custom group
         let protectedItems = items.filter { $0.isPinned || $0.groupId != nil }
         let transientItems = items.filter { !$0.isPinned && $0.groupId == nil }
         
         let allowedTransient = max(0, maxCount - protectedItems.count)
         if transientItems.count > allowedTransient {
-            let toRemove = transientItems.suffix(transientItems.count - allowedTransient)
+            let candidates = transientItems.suffix(transientItems.count - allowedTransient)
+            let toRemove = isPrivacyMode ? candidates.filter { ephemeralItemIds.contains($0.id) } : Array(candidates)
+            guard !toRemove.isEmpty else { return }
+            
+            let removeIds = Set(toRemove.map(\.id))
             for item in toRemove {
                 if let imgName = item.imageFileName {
-                    deleteImageFile(name: imgName)
+                    imageStore.deleteImageFile(named: imgName)
                 }
                 ephemeralItemIds.remove(item.id)
             }
-            let retainedTransient = Array(transientItems.prefix(allowedTransient))
-            let retainedIds = Set(protectedItems.map(\.id) + retainedTransient.map(\.id))
-            self.items = self.items.filter { retainedIds.contains($0.id) }
-            self.scheduleSave()
+            self.items.removeAll { removeIds.contains($0.id) }
+            if !isPrivacyMode {
+                sqliteStore?.deleteClips(ids: Array(removeIds))
+            }
         }
     }
     
     public func togglePin(id: UUID) {
         if let index = self.items.firstIndex(where: { $0.id == id }) {
             self.items[index].isPinned.toggle()
-            self.scheduleSave()
+            if !isPrivacyMode && !ephemeralItemIds.contains(id) {
+                sqliteStore?.updateClipPin(id: id, isPinned: self.items[index].isPinned)
+            }
+        }
+    }
+    
+    public func updateOCRText(id: UUID, text: String?) {
+        if let index = self.items.firstIndex(where: { $0.id == id }) {
+            self.items[index].ocrText = text
+            if !isPrivacyMode && !ephemeralItemIds.contains(id) {
+                sqliteStore?.updateClipOCR(id: id, ocrText: text)
+            }
         }
     }
     
@@ -306,9 +334,11 @@ public class StorageManager: ObservableObject {
             let item = self.items.remove(at: index)
             ephemeralItemIds.remove(item.id)
             if let imgName = item.imageFileName {
-                self.deleteImageFile(name: imgName)
+                imageStore.deleteImageFile(named: imgName)
             }
-            self.scheduleSave()
+            if !isPrivacyMode {
+                sqliteStore?.deleteClips(ids: [id])
+            }
         }
     }
     
@@ -319,14 +349,17 @@ public class StorageManager: ObservableObject {
         for item in toRemove {
             ephemeralItemIds.remove(item.id)
             if let imgName = item.imageFileName {
-                self.deleteImageFile(name: imgName)
+                imageStore.deleteImageFile(named: imgName)
             }
         }
+        let removedIds = toRemove.map(\.id)
         self.items.removeAll { !$0.isPinned && $0.groupId == nil }
-        self.scheduleSave()
+        if !isPrivacyMode && !removedIds.isEmpty {
+            sqliteStore?.deleteClips(ids: removedIds)
+        }
     }
     
-    // MARK: - Background Image Ingestion & Deduplication
+    // MARK: - Background Image Ingestion, Deduplication & Auto-OCR
 
     public func ingestImageDataAsync(
         rawPNG: Data?,
@@ -336,7 +369,7 @@ public class StorageManager: ObservableObject {
         sourceBundleId: String
     ) {
         queue.async { [weak self] in
-            guard let prepared = Self.prepareImageFromPasteboardData(rawPNG: rawPNG, rawTIFF: rawTIFF) else {
+            guard let prepared = ImageCacheStore.prepareImageFromPasteboardData(rawPNG: rawPNG, rawTIFF: rawTIFF) else {
                 return
             }
             DispatchQueue.main.async {
@@ -357,7 +390,7 @@ public class StorageManager: ObservableObject {
         sourceBundleId: String
     ) {
         queue.async { [weak self] in
-            if let prepared = Self.prepareImageFromFile(path: path) {
+            if let prepared = ImageCacheStore.prepareImageFromFile(path: path) {
                 DispatchQueue.main.async {
                     self?.finalizeIngestedImage(
                         prepared,
@@ -367,7 +400,6 @@ public class StorageManager: ObservableObject {
                     )
                 }
             } else {
-                // Fallback to regular file item if image decoding fails
                 DispatchQueue.main.async {
                     let fallbackItem = ClipItem(
                         type: .file,
@@ -387,39 +419,20 @@ public class StorageManager: ObservableObject {
         sourceAppName: String,
         sourceBundleId: String
     ) {
-        // Deduplicate by SHA-256 hash before writing any new file
         if let existingIndex = self.items.firstIndex(where: { $0.type == .image && $0.imageHash == prepared.sha256 }) {
             var existing = self.items.remove(at: existingIndex)
             existing.updatedAt = Date()
             existing.createdAt = Date()
             self.items.insert(existing, at: 0)
+            if !isPrivacyMode && !ephemeralItemIds.contains(existing.id) {
+                sqliteStore?.upsertClip(existing)
+            }
             self.enforceHistoryLimit()
-            self.scheduleSave()
             return
         }
         
         let fileName = "\(UUID().uuidString).png"
-        let isPrivacy = AppSettings.shared.privacyMode
-        
-        if let img = NSImage(data: prepared.pngData) {
-            let cost = Self.estimatedMemoryCost(of: img)
-            self.imageCache.setObject(img, forKey: fileName as NSString, cost: cost)
-            if isPrivacy {
-                self.memoryImages[fileName] = img
-            }
-        }
-        
-        if !isPrivacy {
-            let targetURL = imagesFolderURL.appendingPathComponent(fileName)
-            let dataToWrite = prepared.pngData
-            queue.async {
-                do {
-                    try dataToWrite.write(to: targetURL, options: .atomic)
-                } catch {
-                    print("Failed to write clipboard image asynchronously: \(error)")
-                }
-            }
-        }
+        let decodedImage = imageStore.storeNewImage(fileName: fileName, pngData: prepared.pngData, isPrivacyMode: isPrivacyMode)
         
         let item = ClipItem(
             type: .image,
@@ -432,361 +445,72 @@ public class StorageManager: ObservableObject {
             sourceAppBundleId: sourceBundleId
         )
         addClip(item)
-    }
-    
-    nonisolated private static func prepareImageFromPasteboardData(rawPNG: Data?, rawTIFF: Data?) -> PreparedImage? {
-        if let png = rawPNG, let dims = readImagePixelDimensions(from: png) {
-            guard dims.width > 2 && dims.height > 2 else { return nil }
-            return PreparedImage(
-                pngData: png,
-                width: dims.width,
-                height: dims.height,
-                sha256: sha256Hex(of: png)
-            )
-        }
-        if let tiff = rawTIFF,
-           let bitmap = NSBitmapImageRep(data: tiff),
-           bitmap.pixelsWide > 2,
-           bitmap.pixelsHigh > 2,
-           let pngData = bitmap.representation(using: .png, properties: [:]) {
-            return PreparedImage(
-                pngData: pngData,
-                width: Double(bitmap.pixelsWide),
-                height: Double(bitmap.pixelsHigh),
-                sha256: sha256Hex(of: pngData)
-            )
-        }
-        return nil
-    }
-    
-    nonisolated private static func prepareImageFromFile(path: String) -> PreparedImage? {
-        let url = URL(fileURLWithPath: path)
-        let ext = url.pathExtension.lowercased()
         
-        if ext == "png",
-           let data = try? Data(contentsOf: url),
-           let dims = readImagePixelDimensions(from: data) {
-            guard dims.width > 2 && dims.height > 2 else { return nil }
-            return PreparedImage(
-                pngData: data,
-                width: dims.width,
-                height: dims.height,
-                sha256: sha256Hex(of: data)
-            )
-        }
-        
-        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-           let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-            guard cgImage.width > 2 && cgImage.height > 2 else { return nil }
-            let bitmap = NSBitmapImageRep(cgImage: cgImage)
-            if let pngData = bitmap.representation(using: .png, properties: [:]) {
-                return PreparedImage(
-                    pngData: pngData,
-                    width: Double(cgImage.width),
-                    height: Double(cgImage.height),
-                    sha256: sha256Hex(of: pngData)
-                )
+        if AppSettings.shared.enableAutoOCR, let ocrImage = decodedImage {
+            let targetId = item.id
+            Task { @MainActor [weak self] in
+                if let recognized = await OCRService.recognizeText(from: ocrImage) {
+                    self?.updateOCRText(id: targetId, text: recognized)
+                }
             }
         }
-        
-        // Fallback for vector formats such as SVG
-        if let img = NSImage(contentsOfFile: path),
-           img.size.width > 2,
-           img.size.height > 2,
-           let tiff = img.tiffRepresentation,
-           let bitmap = NSBitmapImageRep(data: tiff),
-           let pngData = bitmap.representation(using: .png, properties: [:]) {
-            return PreparedImage(
-                pngData: pngData,
-                width: Double(bitmap.pixelsWide),
-                height: Double(bitmap.pixelsHigh),
-                sha256: sha256Hex(of: pngData)
-            )
-        }
-        
-        return nil
     }
     
-    nonisolated private static func readImagePixelDimensions(from data: Data) -> (width: Double, height: Double)? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = props[kCGImagePropertyPixelWidth] as? NSNumber,
-              let height = props[kCGImagePropertyPixelHeight] as? NSNumber else {
-            return nil
-        }
-        return (width.doubleValue, height.doubleValue)
+    // MARK: - Media Store Delegation
+    
+    public func imageFileURL(named fileName: String) -> URL? {
+        imageStore.imageFileURL(named: fileName)
     }
     
-    nonisolated private static func sha256Hex(of data: Data) -> String {
-        let digest = SHA256.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
-    
-    nonisolated private static func estimatedMemoryCost(of image: NSImage) -> Int {
-        if let rep = image.representations.first, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
-            return max(1, rep.pixelsWide * rep.pixelsHigh * 4)
-        }
-        return max(1, Int(image.size.width * image.size.height * 4))
-    }
-    
-    // MARK: - Synchronous Image Helpers (Kept for Pasteboard & Compatibility)
-    
-    // Save image to disk (or memory in privacy mode) and return file name
     public func saveImage(_ image: NSImage) -> (fileName: String, width: Double, height: Double)? {
-        guard let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            return nil
-        }
-        
-        let fileName = "\(UUID().uuidString).png"
-        let cost = Self.estimatedMemoryCost(of: image)
-        
-        if AppSettings.shared.privacyMode {
-            self.memoryImages[fileName] = image
-            self.imageCache.setObject(image, forKey: fileName as NSString, cost: cost)
-            return (fileName, Double(bitmap.pixelsWide), Double(bitmap.pixelsHigh))
-        }
-        
-        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
-        do {
-            try pngData.write(to: fileURL, options: .atomic)
-            self.imageCache.setObject(image, forKey: fileName as NSString, cost: cost)
-            return (fileName, Double(bitmap.pixelsWide), Double(bitmap.pixelsHigh))
-        } catch {
-            print("Failed to save clipboard image: \(error)")
-            return nil
-        }
+        imageStore.saveImageSync(image, isPrivacyMode: isPrivacyMode)
     }
     
     public func cachedImage(named fileName: String) -> NSImage? {
-        if let mem = memoryImages[fileName] {
-            return mem
-        }
-        return imageCache.object(forKey: fileName as NSString)
+        imageStore.cachedImage(named: fileName)
     }
     
     public func cachedImage(fromFilePath path: String) -> NSImage? {
-        return imageCache.object(forKey: "file_\(path)" as NSString)
+        imageStore.cachedImage(fromFilePath: path)
     }
     
     public func loadImage(named fileName: String) -> NSImage? {
-        if let mem = memoryImages[fileName] {
-            return mem
-        }
-        let key = fileName as NSString
-        if let cached = imageCache.object(forKey: key) {
-            return cached
-        }
-        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        if let img = NSImage(contentsOf: fileURL) {
-            imageCache.setObject(img, forKey: key, cost: Self.estimatedMemoryCost(of: img))
-            return img
-        }
-        return nil
+        imageStore.loadImage(named: fileName)
     }
     
     public func loadImage(fromFilePath path: String) -> NSImage? {
-        let key = "file_\(path)" as NSString
-        if let cached = imageCache.object(forKey: key) {
-            return cached
-        }
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
-        if let img = NSImage(contentsOfFile: path) {
-            imageCache.setObject(img, forKey: key, cost: Self.estimatedMemoryCost(of: img))
-            return img
-        }
-        return nil
+        imageStore.loadImage(fromFilePath: path)
     }
     
-    // MARK: - Asynchronous Image & Thumbnail Loading
-    
     public func loadImageAsync(named fileName: String) async -> NSImage? {
-        if let cached = cachedImage(named: fileName) {
-            return cached
-        }
-        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
-        let loaded: NSImage? = await withCheckedContinuation { continuation in
-            queue.async {
-                guard FileManager.default.fileExists(atPath: fileURL.path) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                continuation.resume(returning: NSImage(contentsOf: fileURL))
-            }
-        }
-        if let img = loaded {
-            imageCache.setObject(img, forKey: fileName as NSString, cost: Self.estimatedMemoryCost(of: img))
-        }
-        return loaded
+        await imageStore.loadImageAsync(named: fileName)
     }
     
     public func loadImageAsync(fromFilePath path: String) async -> NSImage? {
-        if let cached = cachedImage(fromFilePath: path) {
-            return cached
-        }
-        let loaded: NSImage? = await withCheckedContinuation { continuation in
-            queue.async {
-                guard FileManager.default.fileExists(atPath: path) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                continuation.resume(returning: NSImage(contentsOfFile: path))
-            }
-        }
-        if let img = loaded {
-            imageCache.setObject(img, forKey: "file_\(path)" as NSString, cost: Self.estimatedMemoryCost(of: img))
-        }
-        return loaded
+        await imageStore.loadImageAsync(fromFilePath: path)
     }
     
     public func cachedThumbnail(named fileName: String, maxPixelSize: CGFloat = 80) -> NSImage? {
-        let key = Self.thumbnailCacheKey(forName: fileName, maxPixelSize: maxPixelSize)
-        return thumbnailCache.object(forKey: key as NSString)
+        imageStore.cachedThumbnail(named: fileName, maxPixelSize: maxPixelSize)
     }
     
     public func cachedThumbnail(forFilePath path: String, maxPixelSize: CGFloat = 80) -> NSImage? {
-        let key = "thumb_path_\(path)_\(Int(maxPixelSize))"
-        return thumbnailCache.object(forKey: key as NSString)
+        imageStore.cachedThumbnail(forFilePath: path, maxPixelSize: maxPixelSize)
     }
     
     public func loadThumbnailAsync(named fileName: String, maxPixelSize: CGFloat = 80) async -> NSImage? {
-        let key = Self.thumbnailCacheKey(forName: fileName, maxPixelSize: maxPixelSize)
-        if let cached = thumbnailCache.object(forKey: key as NSString) {
-            return cached
-        }
-        
-        let memOrCachedImage = memoryImages[fileName] ?? imageCache.object(forKey: fileName as NSString)
-        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
-        
-        let decoded: NSImage? = await withCheckedContinuation { continuation in
-            queue.async {
-                if FileManager.default.fileExists(atPath: fileURL.path),
-                   let thumb = Self.decodeThumbnail(from: fileURL, maxPixelSize: maxPixelSize) {
-                    continuation.resume(returning: thumb)
-                    return
-                }
-                if let sourceImg = memOrCachedImage,
-                   let tiffData = sourceImg.tiffRepresentation,
-                   let thumb = Self.decodeThumbnail(fromData: tiffData, maxPixelSize: maxPixelSize) {
-                    continuation.resume(returning: thumb)
-                    return
-                }
-                continuation.resume(returning: nil)
-            }
-        }
-        
-        if let thumb = decoded {
-            thumbnailCache.setObject(thumb, forKey: key as NSString, cost: Self.estimatedMemoryCost(of: thumb))
-            thumbnailKeysByImageName[fileName, default: []].insert(key)
-        }
-        return decoded
+        await imageStore.loadThumbnailAsync(named: fileName, maxPixelSize: maxPixelSize)
     }
     
     public func loadThumbnailAsync(forFilePath path: String, maxPixelSize: CGFloat = 80) async -> NSImage? {
-        let key = "thumb_path_\(path)_\(Int(maxPixelSize))"
-        if let cached = thumbnailCache.object(forKey: key as NSString) {
-            return cached
-        }
-        let fileURL = URL(fileURLWithPath: path)
-        let decoded: NSImage? = await withCheckedContinuation { continuation in
-            queue.async {
-                continuation.resume(returning: Self.decodeThumbnail(from: fileURL, maxPixelSize: maxPixelSize))
-            }
-        }
-        if let thumb = decoded {
-            thumbnailCache.setObject(thumb, forKey: key as NSString, cost: Self.estimatedMemoryCost(of: thumb))
-        }
-        return decoded
+        await imageStore.loadThumbnailAsync(forFilePath: path, maxPixelSize: maxPixelSize)
     }
     
-    // Fast downscaled thumbnail generation directly via ImageIO without full-image decoding
     public func loadThumbnail(named fileName: String, maxPixelSize: CGFloat = 80) -> NSImage? {
-        let key = Self.thumbnailCacheKey(forName: fileName, maxPixelSize: maxPixelSize)
-        if let cached = thumbnailCache.object(forKey: key as NSString) {
-            return cached
-        }
-        if let mem = memoryImages[fileName],
-           let tiff = mem.tiffRepresentation,
-           let thumb = Self.decodeThumbnail(fromData: tiff, maxPixelSize: maxPixelSize) {
-            thumbnailCache.setObject(thumb, forKey: key as NSString, cost: Self.estimatedMemoryCost(of: thumb))
-            thumbnailKeysByImageName[fileName, default: []].insert(key)
-            return thumb
-        }
-        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
-        if let thumb = createThumbnail(from: fileURL, cacheKey: key as NSString, maxPixelSize: maxPixelSize) {
-            thumbnailKeysByImageName[fileName, default: []].insert(key)
-            return thumb
-        }
-        return nil
+        imageStore.loadThumbnail(named: fileName, maxPixelSize: maxPixelSize)
     }
     
     public func loadThumbnail(forFilePath path: String, maxPixelSize: CGFloat = 80) -> NSImage? {
-        let key = "thumb_path_\(path)_\(Int(maxPixelSize))" as NSString
-        if let cached = thumbnailCache.object(forKey: key) {
-            return cached
-        }
-        let fileURL = URL(fileURLWithPath: path)
-        return createThumbnail(from: fileURL, cacheKey: key, maxPixelSize: maxPixelSize)
-    }
-    
-    private func createThumbnail(from fileURL: URL, cacheKey: NSString, maxPixelSize: CGFloat) -> NSImage? {
-        guard let thumb = Self.decodeThumbnail(from: fileURL, maxPixelSize: maxPixelSize) else {
-            return nil
-        }
-        thumbnailCache.setObject(thumb, forKey: cacheKey, cost: Self.estimatedMemoryCost(of: thumb))
-        return thumb
-    }
-    
-    nonisolated private static func decodeThumbnail(from fileURL: URL, maxPixelSize: CGFloat) -> NSImage? {
-        guard FileManager.default.fileExists(atPath: fileURL.path),
-              let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
-            return nil
-        }
-        return decodeThumbnail(fromSource: source, maxPixelSize: maxPixelSize)
-    }
-    
-    nonisolated private static func decodeThumbnail(fromData data: Data, maxPixelSize: CGFloat) -> NSImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            return nil
-        }
-        return decodeThumbnail(fromSource: source, maxPixelSize: maxPixelSize)
-    }
-    
-    nonisolated private static func decodeThumbnail(fromSource source: CGImageSource, maxPixelSize: CGFloat) -> NSImage? {
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-        ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-    }
-    
-    nonisolated private static func thumbnailCacheKey(forName fileName: String, maxPixelSize: CGFloat) -> String {
-        "thumb_\(fileName)_\(Int(maxPixelSize))"
-    }
-    
-    private func purgeCachedImage(named name: String) {
-        imageCache.removeObject(forKey: name as NSString)
-        memoryImages.removeValue(forKey: name)
-        if let keys = thumbnailKeysByImageName.removeValue(forKey: name) {
-            for key in keys {
-                thumbnailCache.removeObject(forKey: key as NSString)
-            }
-        }
-        thumbnailCache.removeObject(forKey: Self.thumbnailCacheKey(forName: name, maxPixelSize: 80) as NSString)
-    }
-    
-    private func deleteImageFile(name: String) {
-        purgeCachedImage(named: name)
-        let fileURL = imagesFolderURL.appendingPathComponent(name)
-        queue.async {
-            try? FileManager.default.removeItem(at: fileURL)
-        }
+        imageStore.loadThumbnail(forFilePath: path, maxPixelSize: maxPixelSize)
     }
 }

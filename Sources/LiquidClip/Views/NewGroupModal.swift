@@ -1,10 +1,18 @@
+/**
+ * [INPUT]: 依赖 StorageManager 与 ClipGroup 模型
+ * [OUTPUT]: 提供支持新建与编辑双重模式的自定义分组弹窗 NewGroupModal
+ * [POS]: 自定义分组创建/编辑模态视图，由 MainWindowView 弹出
+ * [PROTOCOL]: Update this header on change, then check GEMINI.md
+ */
+
 import SwiftUI
 import AppKit
 
 public struct NewGroupModal: View {
     @ObservedObject private var storage = StorageManager.shared
-    @State private var groupName: String = ""
-    @State private var selectedIcon: String = "folder.fill"
+    public var editingGroup: ClipGroup?
+    @State private var groupName: String
+    @State private var selectedIcon: String
     
     public var onClose: () -> Void
     public var onCreated: ((ClipGroup) -> Void)?
@@ -21,20 +29,29 @@ public struct NewGroupModal: View {
         "lock.fill", "pin.fill", "bubble.left.and.bubble.right.fill"
     ]
     
-    public init(onClose: @escaping () -> Void, onCreated: ((ClipGroup) -> Void)? = nil) {
+    public init(
+        editingGroup: ClipGroup? = nil,
+        onClose: @escaping () -> Void,
+        onCreated: ((ClipGroup) -> Void)? = nil
+    ) {
+        self.editingGroup = editingGroup
+        self._groupName = State(initialValue: editingGroup?.name ?? "")
+        self._selectedIcon = State(initialValue: editingGroup?.icon ?? "folder.fill")
         self.onClose = onClose
         self.onCreated = onCreated
     }
+    
+    private var isEditing: Bool { editingGroup != nil }
     
     public var body: some View {
         VStack(spacing: 16) {
             // Header
             HStack {
                 HStack(spacing: 6) {
-                    Image(systemName: "folder.badge.plus")
+                    Image(systemName: isEditing ? "pencil.circle.fill" : "folder.badge.plus")
                         .font(.system(size: 15))
                         .foregroundColor(.accentColor)
-                    Text("新建自定义分组")
+                    Text(isEditing ? "编辑自定义分组" : "新建自定义分组")
                         .font(.system(size: 14, weight: .bold))
                 }
                 Spacer()
@@ -142,8 +159,8 @@ public struct NewGroupModal: View {
                 .cornerRadius(6)
                 .buttonStyle(.plain)
                 
-                Button("创建分组") {
-                    createAndFinish()
+                Button(isEditing ? "保存修改" : "创建分组") {
+                    submitAndFinish()
                 }
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.white)
@@ -168,11 +185,15 @@ public struct NewGroupModal: View {
         .shadow(color: Color.black.opacity(0.25), radius: 20)
     }
     
-    private func createAndFinish() {
+    private func submitAndFinish() {
         let trimmed = groupName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        let group = storage.createGroup(name: trimmed, icon: selectedIcon)
-        onCreated?(group)
+        if let existing = editingGroup {
+            storage.updateGroup(id: existing.id, name: trimmed, icon: selectedIcon)
+        } else {
+            let group = storage.createGroup(name: trimmed, icon: selectedIcon)
+            onCreated?(group)
+        }
         onClose()
     }
 }

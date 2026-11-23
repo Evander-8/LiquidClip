@@ -66,8 +66,8 @@ public class PasteSimulator {
         }
     }
     
-    // Copy item to system pasteboard
-    public func copyToPasteboard(item: ClipItem) {
+    // Copy item to system pasteboard (set plainTextOnly = true to strip HTML formatting)
+    public func copyToPasteboard(item: ClipItem, plainTextOnly: Bool = false) {
         ClipboardMonitor.shared.isSelfCopying = true
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -77,7 +77,7 @@ public class PasteSimulator {
             if let text = item.plainText {
                 pb.setString(text, forType: .string)
             }
-            if let html = item.htmlText {
+            if !plainTextOnly, let html = item.htmlText {
                 pb.setString(html, forType: .html)
             }
             
@@ -112,7 +112,7 @@ public class PasteSimulator {
     
     // Perform paste action. Returns false when auto-paste is enabled but Accessibility is missing.
     @discardableResult
-    public func paste(item: ClipItem, closeAction: () -> Void) -> Bool {
+    public func paste(item: ClipItem, plainTextOnly: Bool = false, closeAction: () -> Void) -> Bool {
         let shouldAutoPaste = AppSettings.shared.autoPasteOnSelect
         let hasAccessibility = self.isAccessibilityTrusted
         let needsAccessibility = shouldAutoPaste && !hasAccessibility
@@ -126,7 +126,7 @@ public class PasteSimulator {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            self.copyToPasteboard(item: item)
+            self.copyToPasteboard(item: item, plainTextOnly: plainTextOnly)
             
             guard shouldAutoPaste else {
                 SoundManager.shared.playCopy()

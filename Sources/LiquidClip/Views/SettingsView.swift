@@ -240,6 +240,9 @@ public struct SettingsView: View {
                         
                         Toggle("呼出窗口时跟随鼠标所在屏幕", isOn: $settings.windowFollowsCursor)
                             .font(.system(size: 13))
+                        
+                        Toggle("自动识别图片文字 (离线 OCR，支持搜图)", isOn: $settings.enableAutoOCR)
+                            .font(.system(size: 13))
                     }
                     
                     // Privacy & Security
@@ -259,6 +262,8 @@ public struct SettingsView: View {
                                 .foregroundColor(.secondary)
                                 .padding(.leading, 18)
                         }
+                        
+                        ExcludedAppsSettingsSection()
                     }
                     
                     // About Section with Version & Build

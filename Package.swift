@@ -17,6 +17,9 @@ let package = Package(
             path: "Sources/LiquidClip",
             swiftSettings: [
                 .unsafeFlags(["-parse-as-library", "-swift-version", "5"])
+            ],
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
             ]
         )
     ]

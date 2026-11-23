@@ -20,6 +20,7 @@ public struct ClipItem: Identifiable, Codable, Hashable {
     public var htmlText: String?
     public var imageFileName: String?
     public var imageHash: String?
+    public var ocrText: String?
     public var imageWidth: Double?
     public var imageHeight: Double?
     public var filePaths: [String]?
@@ -42,6 +43,7 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         htmlText: String? = nil,
         imageFileName: String? = nil,
         imageHash: String? = nil,
+        ocrText: String? = nil,
         imageWidth: Double? = nil,
         imageHeight: Double? = nil,
         filePaths: [String]? = nil,
@@ -63,6 +65,7 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         self.htmlText = htmlText
         self.imageFileName = imageFileName
         self.imageHash = imageHash
+        self.ocrText = ocrText
         self.imageWidth = imageWidth
         self.imageHeight = imageHeight
         self.filePaths = filePaths
@@ -435,6 +438,9 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         if q.isEmpty { return true }
         
         if let text = plainText, text.localizedCaseInsensitiveContains(q) {
+            return true
+        }
+        if let ocr = ocrText, ocr.localizedCaseInsensitiveContains(q) {
             return true
         }
         if let app = sourceAppName, app.localizedCaseInsensitiveContains(q) {
