@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 依赖 Foundation、AppKit、ImageIO 与 CryptoKit
- * [OUTPUT]: 提供图像媒体与缓存管理器 ImageCacheStore，封装后台 PNG 编解码、SHA-256 哈希、NSCache 字节限额与异步缩略图/大图加载
+ * [OUTPUT]: 提供图像媒体与缓存管理器 ImageCacheStore，封装后台 PNG 编解码、SHA-256 哈希、原始 PNG 字节异步读取、NSCache 字节限额与异步缩略图加载
  * [POS]: StorageManager 的媒体子引擎，专责图像磁盘文件与内存缓存生命周期
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -26,6 +26,7 @@ public final class ImageCacheStore {
     private let thumbnailCache = NSCache<NSString, NSImage>()
     private var thumbnailKeysByImageName: [String: Set<String>] = [:]
     private var memoryImages: [String: NSImage] = [:]
+    private var memoryImageData: [String: Data] = [:]
     
     public init(imagesFolderURL: URL, queue: DispatchQueue) {
         self.imagesFolderURL = imagesFolderURL
@@ -49,7 +50,10 @@ public final class ImageCacheStore {
             imageCache.setObject(img, forKey: fileName as NSString, cost: cost)
             if isPrivacyMode {
                 memoryImages[fileName] = img
+                memoryImageData[fileName] = pngData
             }
+        } else if isPrivacyMode {
+            memoryImageData[fileName] = pngData
         }
         if !isPrivacyMode {
             let targetURL = imagesFolderURL.appendingPathComponent(fileName)
@@ -76,6 +80,7 @@ public final class ImageCacheStore {
         
         if isPrivacyMode {
             memoryImages[fileName] = image
+            memoryImageData[fileName] = pngData
             imageCache.setObject(image, forKey: fileName as NSString, cost: cost)
             return (fileName, Double(bitmap.pixelsWide), Double(bitmap.pixelsHigh))
         }
@@ -104,17 +109,39 @@ public final class ImageCacheStore {
             purgeCachedImage(named: imgName)
         }
         memoryImages.removeAll()
+        memoryImageData.removeAll()
     }
     
     public func purgeCachedImage(named name: String) {
         imageCache.removeObject(forKey: name as NSString)
         memoryImages.removeValue(forKey: name)
+        memoryImageData.removeValue(forKey: name)
         if let keys = thumbnailKeysByImageName.removeValue(forKey: name) {
             for key in keys {
                 thumbnailCache.removeObject(forKey: key as NSString)
             }
         }
         thumbnailCache.removeObject(forKey: Self.thumbnailCacheKey(forName: name, maxPixelSize: 80) as NSString)
+    }
+
+    public func loadPNGData(named fileName: String) -> Data? {
+        if let memData = memoryImageData[fileName] {
+            return memData
+        }
+        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
+        return try? Data(contentsOf: fileURL)
+    }
+
+    public func loadPNGDataAsync(named fileName: String) async -> Data? {
+        if let memData = memoryImageData[fileName] {
+            return memData
+        }
+        let fileURL = imagesFolderURL.appendingPathComponent(fileName)
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: try? Data(contentsOf: fileURL))
+            }
+        }
     }
     
     public func deleteImageFile(named name: String) {

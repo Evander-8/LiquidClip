@@ -1,6 +1,6 @@
 /**
- * [INPUT]: 依赖系统 libsqlite3（SQLite3 + FTS5 trigram）、ClipItem 与 ClipGroup 模型
- * [OUTPUT]: 提供线程安全的增量存储与全文检索引擎 SQLiteStore，支持 WAL、事务迁移、FTS5/LIKE 混合查询
+ * [INPUT]: 依赖系统 libsqlite3（SQLite3 + External-Content FTS5 trigram）、ClipItem 与 ClipGroup 模型
+ * [OUTPUT]: 提供线程安全的增量存储与异步全文检索引擎 SQLiteStore，支持 WAL、Triggers 自动同步 FTS5、版本迁移与混合查询
  * [POS]: 底层持久化数据库引擎，专由 StorageManager 持有并调度
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -31,6 +31,7 @@ public final class SQLiteStore: @unchecked Sendable {
             Self.exec(db: db, sql: "PRAGMA journal_mode = WAL;")
             Self.exec(db: db, sql: "PRAGMA synchronous = NORMAL;")
             Self.exec(db: db, sql: "PRAGMA temp_store = MEMORY;")
+            Self.exec(db: db, sql: "PRAGMA recursive_triggers = ON;")
             return Self.createSchema(db: db)
         }
         if !ok {
@@ -49,7 +50,7 @@ public final class SQLiteStore: @unchecked Sendable {
     // MARK: - Schema Creation
     
     private static func createSchema(db: OpaquePointer) -> Bool {
-        let statements = [
+        let baseStatements = [
             """
             CREATE TABLE IF NOT EXISTS groups (
                 id TEXT PRIMARY KEY,
@@ -87,25 +88,82 @@ public final class SQLiteStore: @unchecked Sendable {
             """,
             "CREATE INDEX IF NOT EXISTS idx_clips_created_at ON clips(created_at DESC);",
             "CREATE INDEX IF NOT EXISTS idx_clips_image_hash ON clips(image_hash);",
-            "CREATE INDEX IF NOT EXISTS idx_clips_group_id ON clips(group_id);",
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS clips_fts USING fts5(
-                id UNINDEXED,
-                plain_text,
-                ocr_text,
-                source_app_name,
-                color_hex,
-                file_names,
-                tokenize='trigram'
-            );
-            """
+            "CREATE INDEX IF NOT EXISTS idx_clips_group_id ON clips(group_id);"
         ]
-        for sql in statements {
+        for sql in baseStatements {
             if !exec(db: db, sql: sql) {
                 return false
             }
         }
+
+        let currentVersion = queryUserVersion(db: db)
+        if currentVersion < 2 {
+            let migrationStatements = [
+                "DROP TRIGGER IF EXISTS clips_ai;",
+                "DROP TRIGGER IF EXISTS clips_ad;",
+                "DROP TRIGGER IF EXISTS clips_au;",
+                "DROP TABLE IF EXISTS clips_fts;",
+                """
+                CREATE VIRTUAL TABLE clips_fts USING fts5(
+                    plain_text,
+                    ocr_text,
+                    source_app_name,
+                    color_hex,
+                    file_names,
+                    content='clips',
+                    content_rowid='rowid',
+                    tokenize='trigram'
+                );
+                """,
+                """
+                CREATE TRIGGER clips_ai AFTER INSERT ON clips BEGIN
+                    INSERT INTO clips_fts(rowid, plain_text, ocr_text, source_app_name, color_hex, file_names)
+                    VALUES (new.rowid, new.plain_text, new.ocr_text, new.source_app_name, new.color_hex, new.file_names);
+                END;
+                """,
+                """
+                CREATE TRIGGER clips_ad AFTER DELETE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, plain_text, ocr_text, source_app_name, color_hex, file_names)
+                    VALUES ('delete', old.rowid, old.plain_text, old.ocr_text, old.source_app_name, old.color_hex, old.file_names);
+                END;
+                """,
+                """
+                CREATE TRIGGER clips_au AFTER UPDATE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, plain_text, ocr_text, source_app_name, color_hex, file_names)
+                    VALUES ('delete', old.rowid, old.plain_text, old.ocr_text, old.source_app_name, old.color_hex, old.file_names);
+                    INSERT INTO clips_fts(rowid, plain_text, ocr_text, source_app_name, color_hex, file_names)
+                    VALUES (new.rowid, new.plain_text, new.ocr_text, new.source_app_name, new.color_hex, new.file_names);
+                END;
+                """,
+                "INSERT INTO clips_fts(clips_fts) VALUES('rebuild');",
+                "PRAGMA user_version = 2;"
+            ]
+            guard exec(db: db, sql: "BEGIN IMMEDIATE;") else { return false }
+            for sql in migrationStatements {
+                if !exec(db: db, sql: sql) {
+                    exec(db: db, sql: "ROLLBACK;")
+                    return false
+                }
+            }
+            guard exec(db: db, sql: "COMMIT;") else {
+                exec(db: db, sql: "ROLLBACK;")
+                return false
+            }
+            exec(db: db, sql: "VACUUM;")
+        }
         return true
+    }
+
+    private static func queryUserVersion(db: OpaquePointer) -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK, let stmt = stmt else {
+            return 0
+        }
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            return Int(sqlite3_column_int(stmt, 0))
+        }
+        return 0
     }
     
     // MARK: - Read Queries
@@ -196,72 +254,92 @@ public final class SQLiteStore: @unchecked Sendable {
         }
     }
     
-    /// Hybrid FTS5 trigram + LIKE search. Returns matching clip UUIDs.
+    /// Hybrid External-Content FTS5 trigram + LIKE search (sync). Returns matching clip UUIDs.
     public func searchClipIds(query: String) -> Set<UUID> {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         
         return dbQueue.sync {
             guard let db = db else { return [] }
-            if trimmed.count >= 3 {
-                let escaped = "\"" + trimmed.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-                let ftsSQL = "SELECT id FROM clips_fts WHERE clips_fts MATCH ?;"
-                var stmt: OpaquePointer?
-                if sqlite3_prepare_v2(db, ftsSQL, -1, &stmt, nil) == SQLITE_OK, let stmt = stmt {
-                    defer { sqlite3_finalize(stmt) }
-                    sqlite3_bind_text(stmt, 1, escaped, -1, SQLITE_TRANSIENT)
-                    var ids = Set<UUID>()
-                    var stepped = false
-                    while true {
-                        let rc = sqlite3_step(stmt)
-                        if rc == SQLITE_ROW {
-                            stepped = true
-                            if let idStr = columnText(stmt, 0), let uuid = UUID(uuidString: idStr) {
-                                ids.insert(uuid)
-                            }
-                        } else if rc == SQLITE_DONE {
-                            stepped = true
-                            break
-                        } else {
-                            stepped = false
-                            break
-                        }
-                    }
-                    if stepped {
-                        return ids
-                    }
-                }
-            }
-            
-            // Short query (< 3 chars) or FTS fallback via parameterized LIKE
-            let likeEscaped = trimmed
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "%", with: "\\%")
-                .replacingOccurrences(of: "_", with: "\\_")
-            let pattern = "%\(likeEscaped)%"
-            let likeSQL = """
-            SELECT id FROM clips
-            WHERE plain_text LIKE ?1 ESCAPE '\\'
-               OR ocr_text LIKE ?1 ESCAPE '\\'
-               OR source_app_name LIKE ?1 ESCAPE '\\'
-               OR color_hex LIKE ?1 ESCAPE '\\'
-               OR file_names LIKE ?1 ESCAPE '\\';
-            """
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, likeSQL, -1, &stmt, nil) == SQLITE_OK, let stmt = stmt else {
-                return []
-            }
-            defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_text(stmt, 1, pattern, -1, SQLITE_TRANSIENT)
-            
-            var ids = Set<UUID>()
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let idStr = columnText(stmt, 0), let uuid = UUID(uuidString: idStr) {
-                    ids.insert(uuid)
-                }
-            }
-            return ids
+            return Self.executeSearch(db: db, trimmed: trimmed)
         }
+    }
+
+    /// Hybrid External-Content FTS5 trigram + LIKE search (async on dbQueue).
+    public func searchClipIdsAsync(query: String) async -> Set<UUID> {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        return await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                guard let db = self?.db else {
+                    continuation.resume(returning: [])
+                    return
+                }
+                continuation.resume(returning: Self.executeSearch(db: db, trimmed: trimmed))
+            }
+        }
+    }
+
+    private static func executeSearch(db: OpaquePointer, trimmed: String) -> Set<UUID> {
+        if trimmed.count >= 3 {
+            let escaped = "\"" + trimmed.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            let ftsSQL = "SELECT c.id FROM clips_fts f JOIN clips c ON c.rowid = f.rowid WHERE clips_fts MATCH ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, ftsSQL, -1, &stmt, nil) == SQLITE_OK, let stmt = stmt {
+                defer { sqlite3_finalize(stmt) }
+                sqlite3_bind_text(stmt, 1, escaped, -1, SQLITE_TRANSIENT)
+                var ids = Set<UUID>()
+                var stepped = false
+                while true {
+                    let rc = sqlite3_step(stmt)
+                    if rc == SQLITE_ROW {
+                        stepped = true
+                        if let idStr = columnText(stmt, 0), let uuid = UUID(uuidString: idStr) {
+                            ids.insert(uuid)
+                        }
+                    } else if rc == SQLITE_DONE {
+                        stepped = true
+                        break
+                    } else {
+                        stepped = false
+                        break
+                    }
+                }
+                if stepped {
+                    return ids
+                }
+            }
+        }
+        
+        // Short query (< 3 chars) or FTS fallback via parameterized LIKE
+        let likeEscaped = trimmed
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        let pattern = "%\(likeEscaped)%"
+        let likeSQL = """
+        SELECT id FROM clips
+        WHERE plain_text LIKE ?1 ESCAPE '\\'
+           OR ocr_text LIKE ?1 ESCAPE '\\'
+           OR source_app_name LIKE ?1 ESCAPE '\\'
+           OR color_hex LIKE ?1 ESCAPE '\\'
+           OR file_names LIKE ?1 ESCAPE '\\';
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, likeSQL, -1, &stmt, nil) == SQLITE_OK, let stmt = stmt else {
+            return []
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, pattern, -1, SQLITE_TRANSIENT)
+        
+        var ids = Set<UUID>()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let idStr = columnText(stmt, 0), let uuid = UUID(uuidString: idStr) {
+                ids.insert(uuid)
+            }
+        }
+        return ids
     }
     
     // MARK: - Incremental Mutations & Migration
@@ -270,7 +348,6 @@ public final class SQLiteStore: @unchecked Sendable {
         dbQueue.sync {
             guard let db = db else { return }
             Self.exec(db: db, sql: "BEGIN IMMEDIATE;")
-            Self.exec(db: db, sql: "DELETE FROM clips_fts;")
             Self.exec(db: db, sql: "DELETE FROM clips;")
             Self.exec(db: db, sql: "DELETE FROM groups;")
             for group in groups {
@@ -325,9 +402,7 @@ public final class SQLiteStore: @unchecked Sendable {
             guard let db = self?.db else { return }
             Self.exec(db: db, sql: "BEGIN IMMEDIATE;")
             var delClipStmt: OpaquePointer?
-            var delFtsStmt: OpaquePointer?
             sqlite3_prepare_v2(db, "DELETE FROM clips WHERE id = ?;", -1, &delClipStmt, nil)
-            sqlite3_prepare_v2(db, "DELETE FROM clips_fts WHERE id = ?;", -1, &delFtsStmt, nil)
             for id in ids {
                 let idStr = id.uuidString
                 if let s = delClipStmt {
@@ -335,14 +410,8 @@ public final class SQLiteStore: @unchecked Sendable {
                     sqlite3_bind_text(s, 1, idStr, -1, SQLITE_TRANSIENT)
                     sqlite3_step(s)
                 }
-                if let s = delFtsStmt {
-                    sqlite3_reset(s)
-                    sqlite3_bind_text(s, 1, idStr, -1, SQLITE_TRANSIENT)
-                    sqlite3_step(s)
-                }
             }
             if let s = delClipStmt { sqlite3_finalize(s) }
-            if let s = delFtsStmt { sqlite3_finalize(s) }
             Self.exec(db: db, sql: "COMMIT;")
         }
     }
@@ -376,22 +445,13 @@ public final class SQLiteStore: @unchecked Sendable {
     public func updateClipOCR(id: UUID, ocrText: String?) {
         dbQueue.async { [weak self] in
             guard let db = self?.db else { return }
-            Self.exec(db: db, sql: "BEGIN IMMEDIATE;")
-            var stmt1: OpaquePointer?
-            if sqlite3_prepare_v2(db, "UPDATE clips SET ocr_text = ? WHERE id = ?;", -1, &stmt1, nil) == SQLITE_OK, let stmt1 = stmt1 {
-                bindOptionalText(stmt1, 1, ocrText)
-                sqlite3_bind_text(stmt1, 2, id.uuidString, -1, SQLITE_TRANSIENT)
-                sqlite3_step(stmt1)
-                sqlite3_finalize(stmt1)
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, "UPDATE clips SET ocr_text = ? WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK, let stmt = stmt {
+                bindOptionalText(stmt, 1, ocrText)
+                sqlite3_bind_text(stmt, 2, id.uuidString, -1, SQLITE_TRANSIENT)
+                sqlite3_step(stmt)
+                sqlite3_finalize(stmt)
             }
-            var stmt2: OpaquePointer?
-            if sqlite3_prepare_v2(db, "UPDATE clips_fts SET ocr_text = ? WHERE id = ?;", -1, &stmt2, nil) == SQLITE_OK, let stmt2 = stmt2 {
-                bindOptionalText(stmt2, 1, ocrText)
-                sqlite3_bind_text(stmt2, 2, id.uuidString, -1, SQLITE_TRANSIENT)
-                sqlite3_step(stmt2)
-                sqlite3_finalize(stmt2)
-            }
-            Self.exec(db: db, sql: "COMMIT;")
         }
     }
     
@@ -429,13 +489,35 @@ public final class SQLiteStore: @unchecked Sendable {
         }
         
         let sql = """
-        INSERT OR REPLACE INTO clips (
+        INSERT INTO clips (
             id, type, plain_text, html_text, image_file_name, image_hash, ocr_text,
             image_width, image_height, file_paths_json, file_names, color_hex,
             source_app_name, source_app_bundle_id, is_pinned, group_id,
             created_at, updated_at, cached_char_count, cached_line_count,
             cached_word_count, cached_display_title
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            type = excluded.type,
+            plain_text = excluded.plain_text,
+            html_text = excluded.html_text,
+            image_file_name = excluded.image_file_name,
+            image_hash = excluded.image_hash,
+            ocr_text = excluded.ocr_text,
+            image_width = excluded.image_width,
+            image_height = excluded.image_height,
+            file_paths_json = excluded.file_paths_json,
+            file_names = excluded.file_names,
+            color_hex = excluded.color_hex,
+            source_app_name = excluded.source_app_name,
+            source_app_bundle_id = excluded.source_app_bundle_id,
+            is_pinned = excluded.is_pinned,
+            group_id = excluded.group_id,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            cached_char_count = excluded.cached_char_count,
+            cached_line_count = excluded.cached_line_count,
+            cached_word_count = excluded.cached_word_count,
+            cached_display_title = excluded.cached_display_title;
         """
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt = stmt {
@@ -463,29 +545,6 @@ public final class SQLiteStore: @unchecked Sendable {
             bindOptionalText(stmt, 22, item.cachedDisplayTitle)
             sqlite3_step(stmt)
             sqlite3_finalize(stmt)
-        }
-        
-        var delFts: OpaquePointer?
-        if sqlite3_prepare_v2(db, "DELETE FROM clips_fts WHERE id = ?;", -1, &delFts, nil) == SQLITE_OK, let delFts = delFts {
-            sqlite3_bind_text(delFts, 1, item.id.uuidString, -1, SQLITE_TRANSIENT)
-            sqlite3_step(delFts)
-            sqlite3_finalize(delFts)
-        }
-        
-        let ftsSQL = """
-        INSERT INTO clips_fts (id, plain_text, ocr_text, source_app_name, color_hex, file_names)
-        VALUES (?, ?, ?, ?, ?, ?);
-        """
-        var ftsStmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, ftsSQL, -1, &ftsStmt, nil) == SQLITE_OK, let ftsStmt = ftsStmt {
-            sqlite3_bind_text(ftsStmt, 1, item.id.uuidString, -1, SQLITE_TRANSIENT)
-            bindOptionalText(ftsStmt, 2, item.plainText)
-            bindOptionalText(ftsStmt, 3, item.ocrText)
-            bindOptionalText(ftsStmt, 4, item.sourceAppName)
-            bindOptionalText(ftsStmt, 5, item.colorHex)
-            bindOptionalText(ftsStmt, 6, fileNames)
-            sqlite3_step(ftsStmt)
-            sqlite3_finalize(ftsStmt)
         }
     }
     

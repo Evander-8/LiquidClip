@@ -1,6 +1,6 @@
 /**
- * [INPUT]: 依赖 AppKit NSPanel、AppSettings 屏幕跟随配置与 PasteSimulator 前台应用记录
- * [OUTPUT]: 提供非激活式浮动面板 FloatingPanel，负责多屏幕定位、键盘事件拦截、显隐动效与失焦自动隐藏
+ * [INPUT]: 依赖 AppKit NSPanel/NSTextInputClient、AppSettings 屏幕跟随配置与 PasteSimulator 前台应用记录
+ * [OUTPUT]: 提供非激活式浮动面板 FloatingPanel，负责多屏幕定位、IME 组合态保护的键盘拦截、显隐动效与失焦自动隐藏
  * [POS]: 承载主界面的唯一顶层窗口容器，连接 AppDelegate 与 MainWindowView
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -50,6 +50,11 @@ public class FloatingPanel: NSPanel {
     
     public override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown {
+            // Pass events directly to IME when composing marked text (e.g. CJK 1~9 candidate selection, Enter, Esc)
+            if let textInput = self.firstResponder as? NSTextInputClient, textInput.hasMarkedText() {
+                super.sendEvent(event)
+                return
+            }
             if let onKeyDown = onKeyDown, onKeyDown(event) {
                 return
             }

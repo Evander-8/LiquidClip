@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 依赖 SQLiteStore、ImageCacheStore、OCRService、ClipItem、ClipGroup 与 AppSettings
- * [OUTPUT]: 提供全局单例 StorageManager，负责 SQLite3+FTS5 增量持久化、旧 JSON 无损迁移、隐私模式隔离与协调媒体缓存/OCR
+ * [OUTPUT]: 提供全局单例 StorageManager，负责 SQLite3+FTS5 增量持久化、O(1) 指纹去重、异步检索、旧 JSON 无损迁移与媒体缓存/OCR 协调
  * [POS]: 应用数据持久化与媒体存储协调中心，上承 ClipboardMonitor，下接 ViewModels 与视图层
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -26,6 +26,8 @@ public class StorageManager: ObservableObject {
     
     // Ephemeral privacy-mode item IDs (kept purely in memory, never written to disk)
     private var ephemeralItemIds: Set<UUID> = []
+    // O(1) duplicate lookup index mapping ClipItem.contentFingerprint -> ClipItem.id
+    private var idByFingerprint: [String: UUID] = [:]
     
     private init() {
         let fileManager = FileManager.default
@@ -110,8 +112,19 @@ public class StorageManager: ObservableObject {
                 }
                 self.items.removeAll { ephemeralItemIds.contains($0.id) }
                 ephemeralItemIds.removeAll()
+                rebuildFingerprintIndex()
             }
             imageStore.purgeAllMemoryImages()
+        }
+    }
+    
+    private func rebuildFingerprintIndex() {
+        idByFingerprint.removeAll(keepingCapacity: true)
+        for item in items {
+            let fp = item.contentFingerprint
+            if idByFingerprint[fp] == nil {
+                idByFingerprint[fp] = item.id
+            }
         }
     }
     
@@ -133,6 +146,7 @@ public class StorageManager: ObservableObject {
             }
             self.groups = legacyGroups
             self.items = legacyItems
+            rebuildFingerprintIndex()
             sqliteStore?.replaceAll(groups: legacyGroups, clips: legacyItems)
             archiveLegacyJSONFiles()
             purgeOrphanedImageFiles()
@@ -153,6 +167,7 @@ public class StorageManager: ObservableObject {
                 loadedItems[i].populateCachedMetricsIfNeeded()
             }
             self.items = loadedItems
+            rebuildFingerprintIndex()
             purgeOrphanedImageFiles()
         }
     }
@@ -224,7 +239,7 @@ public class StorageManager: ObservableObject {
         imageStore.purgeOrphanedFiles(referencedNames: referencedNames)
     }
     
-    /// Hybrid FTS5 + memory search across persisted items and ephemeral privacy-mode items.
+    /// Hybrid FTS5 + memory search across persisted items and ephemeral privacy-mode items (sync).
     public func searchMatchingIds(query: String) -> Set<UUID> {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -236,6 +251,26 @@ public class StorageManager: ObservableObject {
                 if item.matches(query: trimmed) {
                     matched.insert(item.id)
                 }
+            }
+        }
+        return matched
+    }
+
+    /// Hybrid FTS5 + memory search across persisted items and ephemeral privacy-mode items (async).
+    public func searchMatchingIdsAsync(query: String) async -> Set<UUID> {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return Set(items.map(\.id))
+        }
+        let includeEphemeral = isPrivacyMode || sqliteStore == nil
+        let ephemeralSnapshot = includeEphemeral
+            ? items.filter { sqliteStore == nil || ephemeralItemIds.contains($0.id) }
+            : []
+
+        var matched = await sqliteStore?.searchClipIdsAsync(query: trimmed) ?? []
+        if !ephemeralSnapshot.isEmpty {
+            for item in ephemeralSnapshot where item.matches(query: trimmed) {
+                matched.insert(item.id)
             }
         }
         return matched
@@ -307,7 +342,9 @@ public class StorageManager: ObservableObject {
     
     // MARK: - Clip Items Management
     public func addClip(_ item: ClipItem) {
-        if let existingIndex = self.items.firstIndex(where: { $0.contentFingerprint == item.contentFingerprint }) {
+        let fingerprint = item.contentFingerprint
+        if let existingId = idByFingerprint[fingerprint],
+           let existingIndex = self.items.firstIndex(where: { $0.id == existingId }) {
             var existing = self.items.remove(at: existingIndex)
             existing.updatedAt = Date()
             existing.createdAt = Date() // Move to top
@@ -321,6 +358,7 @@ public class StorageManager: ObservableObject {
             } else {
                 sqliteStore?.upsertClip(item)
             }
+            idByFingerprint[fingerprint] = item.id
             self.items.insert(item, at: 0)
         }
         
@@ -342,6 +380,10 @@ public class StorageManager: ObservableObject {
             
             let removeIds = Set(toRemove.map(\.id))
             for item in toRemove {
+                let fp = item.contentFingerprint
+                if idByFingerprint[fp] == item.id {
+                    idByFingerprint.removeValue(forKey: fp)
+                }
                 if let imgName = item.imageFileName {
                     imageStore.deleteImageFile(named: imgName)
                 }
@@ -375,6 +417,10 @@ public class StorageManager: ObservableObject {
     public func deleteItem(id: UUID) {
         if let index = self.items.firstIndex(where: { $0.id == id }) {
             let item = self.items.remove(at: index)
+            let fp = item.contentFingerprint
+            if idByFingerprint[fp] == item.id {
+                idByFingerprint.removeValue(forKey: fp)
+            }
             ephemeralItemIds.remove(item.id)
             if let imgName = item.imageFileName {
                 imageStore.deleteImageFile(named: imgName)
@@ -390,6 +436,10 @@ public class StorageManager: ObservableObject {
     public func clearUnpinned() {
         let toRemove = self.items.filter { !$0.isPinned && $0.groupId == nil }
         for item in toRemove {
+            let fp = item.contentFingerprint
+            if idByFingerprint[fp] == item.id {
+                idByFingerprint.removeValue(forKey: fp)
+            }
             ephemeralItemIds.remove(item.id)
             if let imgName = item.imageFileName {
                 imageStore.deleteImageFile(named: imgName)
@@ -462,7 +512,9 @@ public class StorageManager: ObservableObject {
         sourceAppName: String,
         sourceBundleId: String
     ) {
-        if let existingIndex = self.items.firstIndex(where: { $0.type == .image && $0.imageHash == prepared.sha256 }) {
+        let imageFP = "i:\(prepared.sha256)"
+        if let existingId = idByFingerprint[imageFP],
+           let existingIndex = self.items.firstIndex(where: { $0.id == existingId }) {
             var existing = self.items.remove(at: existingIndex)
             existing.updatedAt = Date()
             existing.createdAt = Date()
@@ -503,6 +555,14 @@ public class StorageManager: ObservableObject {
     
     public func imageFileURL(named fileName: String) -> URL? {
         imageStore.imageFileURL(named: fileName)
+    }
+
+    public func loadImagePNGData(named fileName: String) -> Data? {
+        imageStore.loadPNGData(named: fileName)
+    }
+
+    public func loadImagePNGDataAsync(named fileName: String) async -> Data? {
+        await imageStore.loadPNGDataAsync(named: fileName)
     }
     
     public func saveImage(_ image: NSImage) -> (fileName: String, width: Double, height: Double)? {

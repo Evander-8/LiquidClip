@@ -1,11 +1,12 @@
 /**
- * [INPUT]: 依赖 Foundation / SwiftUI / AppKit 基础类型，以及同层 ClipType 与 StorageManager 异步/缓存图像接口
- * [OUTPUT]: 提供 ClipItem 剪贴板记录模型、预计算文本统计、内容指纹、RGBA 颜色解析及图像缓存/异步读取桥接
+ * [INPUT]: 依赖 Foundation / CryptoKit / SwiftUI / AppKit 基础类型，以及同层 ClipType 与 StorageManager 异步/缓存图像接口
+ * [OUTPUT]: 提供 ClipItem 剪贴板记录模型、预计算文本统计、SHA-256 缓存内容指纹、RGBA 颜色解析及图像缓存/异步读取桥接
  * [POS]: 核心数据实体，被 StorageManager 持久化与管理，并直接驱动列表行 ClipRowView 与详情页 ClipDetailView
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
 
 import Foundation
+import CryptoKit
 import SwiftUI
 import AppKit
 
@@ -35,6 +36,7 @@ public struct ClipItem: Identifiable, Codable, Hashable {
     public var cachedLineCount: Int?
     public var cachedWordCount: Int?
     public var cachedDisplayTitle: String?
+    public var cachedFingerprint: String?
     
     public init(
         id: UUID = UUID(),
@@ -57,7 +59,8 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         cachedCharCount: Int? = nil,
         cachedLineCount: Int? = nil,
         cachedWordCount: Int? = nil,
-        cachedDisplayTitle: String? = nil
+        cachedDisplayTitle: String? = nil,
+        cachedFingerprint: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -80,6 +83,7 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         self.cachedLineCount = cachedLineCount
         self.cachedWordCount = cachedWordCount
         self.cachedDisplayTitle = cachedDisplayTitle
+        self.cachedFingerprint = cachedFingerprint
         self.populateCachedMetricsIfNeeded()
     }
     
@@ -108,9 +112,18 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         } else {
             cachedDisplayTitle = nil
         }
+        cachedFingerprint = Self.computeContentFingerprint(
+            type: type,
+            plainText: plainText,
+            imageHash: imageHash,
+            imageFileName: imageFileName,
+            imageWidth: imageWidth,
+            imageHeight: imageHeight,
+            filePaths: filePaths
+        )
     }
     
-    // Backfill cached metrics for legacy JSON records loaded from disk
+    // Backfill cached metrics for legacy JSON/SQLite records loaded from disk
     public mutating func populateCachedMetricsIfNeeded() {
         if let text = plainText {
             if cachedCharCount == nil {
@@ -126,17 +139,52 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         if type == .text && cachedDisplayTitle == nil {
             cachedDisplayTitle = Self.computeTextDisplayTitle(from: plainText)
         }
+        if cachedFingerprint == nil {
+            cachedFingerprint = Self.computeContentFingerprint(
+                type: type,
+                plainText: plainText,
+                imageHash: imageHash,
+                imageFileName: imageFileName,
+                imageWidth: imageWidth,
+                imageHeight: imageHeight,
+                filePaths: filePaths
+            )
+        }
     }
     
-    // Content hash for duplicate detection
+    // Stable content hash for O(1) duplicate detection
     public var contentFingerprint: String {
+        cachedFingerprint ?? Self.computeContentFingerprint(
+            type: type,
+            plainText: plainText,
+            imageHash: imageHash,
+            imageFileName: imageFileName,
+            imageWidth: imageWidth,
+            imageHeight: imageHeight,
+            filePaths: filePaths
+        )
+    }
+
+    public static func computeContentFingerprint(
+        type: ClipType,
+        plainText: String?,
+        imageHash: String?,
+        imageFileName: String?,
+        imageWidth: Double?,
+        imageHeight: Double?,
+        filePaths: [String]?
+    ) -> String {
         switch type {
         case .text, .color, .url:
-            return plainText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let normalized = plainText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if normalized.isEmpty { return "t:" }
+            let digest = SHA256.hash(data: Data(normalized.utf8))
+            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            return "t:\(hex)"
         case .image:
-            return imageHash ?? imageFileName ?? "\(imageWidth ?? 0)x\(imageHeight ?? 0)"
+            return "i:\(imageHash ?? imageFileName ?? "\(imageWidth ?? 0)x\(imageHeight ?? 0)")"
         case .file:
-            return (filePaths ?? []).joined(separator: "|")
+            return "f:\((filePaths ?? []).joined(separator: "|"))"
         }
     }
     
@@ -459,7 +507,7 @@ public struct ClipItem: Identifiable, Codable, Hashable {
         return false
     }
     
-    // Helper to convert hex (3, 6, or 8 digits) to RGBA tuple
+    // Helper to convert hex (3, 4, 6, or 8 digits) to RGBA tuple
     public static func hexToRGBA(_ hex: String) -> (Int, Int, Int, Double) {
         var clean = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         if clean.hasPrefix("#") {
@@ -480,6 +528,12 @@ public struct ClipItem: Identifiable, Codable, Hashable {
             let g = Int((value & 0x00FF00) >> 8)
             let b = Int(value & 0x0000FF)
             return (r, g, b, 1.0)
+        } else if clean.count == 4 {
+            let r = Int((value & 0xF000) >> 12) * 17
+            let g = Int((value & 0x0F00) >> 8) * 17
+            let b = Int((value & 0x00F0) >> 4) * 17
+            let a = Double(Int(value & 0x000F) * 17) / 255.0
+            return (r, g, b, a)
         } else if clean.count == 3 {
             let r = Int((value & 0xF00) >> 8) * 17
             let g = Int((value & 0x0F0) >> 4) * 17

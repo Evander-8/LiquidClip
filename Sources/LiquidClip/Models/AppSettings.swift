@@ -1,6 +1,6 @@
 /**
- * [INPUT]: 依赖 UserDefaults、LoginService 与 StorageManager 的历史裁剪能力
- * [OUTPUT]: 提供全局单例 AppSettings，管理并持久化快捷键、历史上限、隐私模式与行为偏好
+ * [INPUT]: 依赖 UserDefaults、LoginService、HotkeyManager 与 StorageManager 的历史裁剪能力
+ * [OUTPUT]: 提供全局单例 AppSettings，管理并持久化快捷键（含冲突回滚）、历史上限、默认排除应用、隐私模式与行为偏好
  * [POS]: 全局配置状态中心，被主窗口、设置页、剪贴板监听与存储管理器共同订阅和读取
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -12,6 +12,16 @@ import Carbon
 @MainActor
 public class AppSettings: ObservableObject {
     public static let shared = AppSettings()
+
+    public static let defaultExcludedApps: [String] = [
+        "com.agilebits.onepassword",
+        "com.agilebits.onepassword7",
+        "com.1password.1password",
+        "com.bitwarden.desktop",
+        "org.keepassxc.keepassxc",
+        "com.apple.Passwords",
+        "com.apple.keychainaccess"
+    ]
     
     @Published public var maxHistoryCount: Int {
         didSet {
@@ -69,8 +79,8 @@ public class AppSettings: ObservableObject {
         }
     }
 
-    /// Privacy mode: history lives in memory only for the session — nothing is
-    /// written to disk (existing files are wiped on enable, save resumes on disable).
+    /// Privacy mode: pauses all disk/SQLite writes while retaining existing persisted
+    /// history untouched; ephemeral items and images stay in memory and are purged on disable.
     @Published public var privacyMode: Bool {
         didSet {
             guard oldValue != privacyMode else { return }
@@ -99,13 +109,7 @@ public class AppSettings: ObservableObject {
         self.windowFollowsCursor = defaults.object(forKey: "windowFollowsCursor") != nil ? defaults.bool(forKey: "windowFollowsCursor") : true
         self.ignorePasswordManagers = defaults.object(forKey: "ignorePasswordManagers") != nil ? defaults.bool(forKey: "ignorePasswordManagers") : true
         self.enableAutoOCR = defaults.object(forKey: "enableAutoOCR") != nil ? defaults.bool(forKey: "enableAutoOCR") : true
-        self.excludedApps = defaults.stringArray(forKey: "excludedApps") ?? [
-            "com.agilebits.onepassword",
-            "com.agilebits.onepassword7",
-            "com.1password.1password",
-            "com.bitwarden.desktop",
-            "org.keepassxc.keepassxc"
-        ]
+        self.excludedApps = defaults.stringArray(forKey: "excludedApps") ?? Self.defaultExcludedApps
         self.hotkeyDisplay = defaults.string(forKey: "hotkeyDisplay") ?? "⌘ ⇧ V"
         self.launchAtLogin = LoginService.isEnabled
         self.privacyMode = defaults.bool(forKey: "privacyMode")
@@ -123,11 +127,19 @@ public class AppSettings: ObservableObject {
         }
     }
 
-    /// Applies a newly recorded hotkey: persists it and re-registers with Carbon.
-    public func setHotkey(keyCode: UInt32, carbonModifiers: UInt32, display: String) {
+    /// Applies a newly recorded hotkey: registers with Carbon first, persisting on success
+    /// or restoring the previous registration on conflict.
+    @discardableResult
+    public func setHotkey(keyCode: UInt32, carbonModifiers: UInt32, display: String) -> Bool {
+        let oldCode = self.hotkeyKeyCode
+        let oldMods = self.hotkeyCarbonModifiers
+        guard HotkeyManager.shared.register(keyCode: keyCode, carbonModifiers: carbonModifiers) else {
+            HotkeyManager.shared.register(keyCode: oldCode, carbonModifiers: oldMods)
+            return false
+        }
         self.hotkeyKeyCode = keyCode
         self.hotkeyCarbonModifiers = carbonModifiers
         self.hotkeyDisplay = display
-        HotkeyManager.shared.register(keyCode: keyCode, carbonModifiers: carbonModifiers)
+        return true
     }
 }

@@ -1,9 +1,9 @@
 # LiquidClip - macOS 原生液态玻璃剪贴板历史管理器
-Swift 6.0 工具链 (-swift-version 5) + SwiftUI + AppKit + SQLite3 (FTS5 trigram) + Vision + CoreImage + Carbon + CryptoKit + ImageIO + ServiceManagement
+Swift 6.0 工具链 (-swift-version 5) + SwiftUI + AppKit + Combine + SQLite3 (External-Content FTS5 trigram) + Vision + CoreImage + Carbon + CryptoKit + ImageIO + ServiceManagement
 
 <directory>
 Sources/LiquidClip/ - 应用源码根目录 (5 个子模块: Models, Services, ViewModels, Window, Views)
-Resources/ - 应用图标资源与 Info.plist (v1.1.1, macOS 14.0+)
+Resources/ - 应用图标资源与 Info.plist (v1.1.2, macOS 14.0+)
 scripts/ - 原生编译打包与 DMG 制作脚本
 dist/ - 本地构建输出目录 (.app 与 .dmg)
 </directory>

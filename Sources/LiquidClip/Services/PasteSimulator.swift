@@ -1,6 +1,6 @@
 /**
- * [INPUT]: 依赖 AppKit、CoreGraphics、ClipItem、AppSettings、ClipboardMonitor 与 SoundManager
- * [OUTPUT]: 提供全局单例 PasteSimulator，负责写入系统剪贴板、模拟 ⌘V 自动粘贴及辅助功能权限检测/修复
+ * [INPUT]: 依赖 AppKit、CoreGraphics、ClipItem、AppSettings、ClipboardMonitor、StorageManager 与 SoundManager
+ * [OUTPUT]: 提供全局单例 PasteSimulator，负责异步 PNG 剪贴板写入（含纯文本去格式）、模拟 ⌘V 自动粘贴及辅助功能权限检测/修复
  * [POS]: 剪贴板输出执行器，被 FloatingPanel、MainWindowView 与 SettingsView 调用
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -68,6 +68,12 @@ public class PasteSimulator {
     
     // Copy item to system pasteboard (set plainTextOnly = true to strip HTML formatting)
     public func copyToPasteboard(item: ClipItem, plainTextOnly: Bool = false) {
+        if item.type == .image {
+            let pngData = item.imageFileName.flatMap { StorageManager.shared.loadImagePNGData(named: $0) }
+            writeImageItemToPasteboard(item, pngData: pngData)
+            return
+        }
+
         ClipboardMonitor.shared.isSelfCopying = true
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -82,31 +88,49 @@ public class PasteSimulator {
             }
             
         case .image:
-            var fileUrls: [NSPasteboardWriting] = []
-            if let paths = item.filePaths {
-                for p in paths {
-                    fileUrls.append(URL(fileURLWithPath: p) as NSPasteboardWriting)
-                }
-            }
-            if !fileUrls.isEmpty {
-                pb.writeObjects(fileUrls)
-            }
-            if let img = item.loadPrimaryImage(),
-               let tiff = img.tiffRepresentation {
-                pb.setData(tiff, forType: .tiff)
-            }
+            break
             
         case .file:
             if let paths = item.filePaths {
                 let urls = paths.map { URL(fileURLWithPath: $0) as NSPasteboardWriting }
                 pb.writeObjects(urls)
             }
-            if item.isImageFile, let img = item.loadPrimaryImage(), let tiff = img.tiffRepresentation {
-                pb.setData(tiff, forType: .tiff)
+            if item.isImageFile {
+                if let first = item.filePaths?.first,
+                   (first as NSString).pathExtension.lowercased() == "png",
+                   let pngData = try? Data(contentsOf: URL(fileURLWithPath: first)) {
+                    pb.setData(pngData, forType: .png)
+                } else if let img = item.loadPrimaryImage(), let tiff = img.tiffRepresentation {
+                    pb.setData(tiff, forType: .tiff)
+                }
             }
         }
         
         // Synchronize changeCount so monitor doesn't wake up
+        ClipboardMonitor.shared.syncChangeCount()
+    }
+
+    private func writeImageItemToPasteboard(_ item: ClipItem, pngData: Data?) {
+        ClipboardMonitor.shared.isSelfCopying = true
+        let pb = NSPasteboard.general
+        pb.clearContents()
+
+        var fileUrls: [NSPasteboardWriting] = []
+        if let paths = item.filePaths {
+            for p in paths {
+                fileUrls.append(URL(fileURLWithPath: p) as NSPasteboardWriting)
+            }
+        }
+        if !fileUrls.isEmpty {
+            pb.writeObjects(fileUrls)
+        }
+        if let pngData = pngData {
+            pb.setData(pngData, forType: .png)
+        } else if let img = item.loadPrimaryImage(),
+                  let tiff = img.tiffRepresentation {
+            pb.setData(tiff, forType: .tiff)
+        }
+
         ClipboardMonitor.shared.syncChangeCount()
     }
     
@@ -120,42 +144,55 @@ public class PasteSimulator {
         // 1. Instantly hide window FIRST (0ms latency, vanishes on the exact click frame!)
         closeAction()
         
-        // 2. Perform pasteboard copy, target activation, and simulated paste asynchronously
+        // 2. For stored PNG images, load PNG bytes off the main thread before writing to NSPasteboard
+        if item.type == .image, let imageFileName = item.imageFileName {
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let pngData = await StorageManager.shared.loadImagePNGDataAsync(named: imageFileName)
+                self.writeImageItemToPasteboard(item, pngData: pngData)
+                self.finishPasteAfterCopy(shouldAutoPaste: shouldAutoPaste, hasAccessibility: hasAccessibility)
+            }
+            return !needsAccessibility
+        }
+        
+        // 3. Perform pasteboard copy, target activation, and simulated paste asynchronously
         // on the next runloop cycle. This ensures the window unmap is flushed to screen
         // with ZERO frame drops or Mach IPC delays!
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            
             self.copyToPasteboard(item: item, plainTextOnly: plainTextOnly)
-            
-            guard shouldAutoPaste else {
-                SoundManager.shared.playCopy()
-                return
-            }
-            
-            let targetApp = self.previousApp
-            
-            // Reactivate target app (even without Accessibility so the user can press ⌘V immediately)
-            if let target = targetApp, !target.isTerminated {
-                if #available(macOS 14.0, *) {
-                    target.activate()
-                } else {
-                    target.activate(options: .activateIgnoringOtherApps)
-                }
-            }
-            
-            // Simulate Command+V with minimal delay (35ms) after target app gains focus
-            if hasAccessibility {
-                SoundManager.shared.playPaste()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) {
-                    self.simulateCommandV()
-                }
-            } else {
-                SoundManager.shared.playCopy()
-            }
+            self.finishPasteAfterCopy(shouldAutoPaste: shouldAutoPaste, hasAccessibility: hasAccessibility)
         }
         
         return !needsAccessibility
+    }
+
+    private func finishPasteAfterCopy(shouldAutoPaste: Bool, hasAccessibility: Bool) {
+        guard shouldAutoPaste else {
+            SoundManager.shared.playCopy()
+            return
+        }
+        
+        let targetApp = self.previousApp
+        
+        // Reactivate target app (even without Accessibility so the user can press ⌘V immediately)
+        if let target = targetApp, !target.isTerminated {
+            if #available(macOS 14.0, *) {
+                target.activate()
+            } else {
+                target.activate(options: .activateIgnoringOtherApps)
+            }
+        }
+        
+        // Simulate Command+V with minimal delay (35ms) after target app gains focus
+        if hasAccessibility {
+            SoundManager.shared.playPaste()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) {
+                self.simulateCommandV()
+            }
+        } else {
+            SoundManager.shared.playCopy()
+        }
     }
     
     private func simulateCommandV() {

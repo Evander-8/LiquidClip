@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 依赖 MainWindowViewModel、StorageManager、AppSettings、UpdateChecker、PasteSimulator 与各子视图组件
+ * [INPUT]: 依赖 MainWindowViewModel（缓存派生列表与指标）、StorageManager、AppSettings、UpdateChecker、PasteSimulator 与各子视图组件
  * [OUTPUT]: 提供主窗口根视图 MainWindowView，负责液态玻璃布局呈现与事件绑定
  * [POS]: 应用核心 UI 容器，被 AppDelegate 挂载于 FloatingPanel 的 NSHostingView 中
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
@@ -23,10 +23,9 @@ public struct MainWindowView: View {
     }
     
     public var body: some View {
-        let currentItems = viewModel.filteredItems(from: storage.items)
+        let currentItems = viewModel.displayedItems
         let selectedItem = viewModel.currentSelectedItem(in: currentItems)
         let currentId = selectedItem?.id
-        let metrics = viewModel.summaryMetrics(for: storage.items, groups: storage.groups)
         
         return ZStack {
             // Native Frosted Liquid Glass Background
@@ -58,7 +57,7 @@ public struct MainWindowView: View {
                 
                 // Center Split Area
                 HStack(spacing: 0) {
-                    leftListColumn(currentItems: currentItems, currentId: currentId, groupMap: metrics.groupMap)
+                    leftListColumn(currentItems: currentItems, currentId: currentId, groupMap: viewModel.groupMap)
                         .frame(width: 330)
                     
                     Divider().opacity(0.35)
@@ -102,8 +101,8 @@ public struct MainWindowView: View {
                 
                 bottomStatusBar(
                     count: currentItems.count,
-                    pinnedCount: metrics.pinnedCount,
-                    groupMap: metrics.groupMap
+                    pinnedCount: viewModel.pinnedCount,
+                    groupMap: viewModel.groupMap
                 )
             }
             
@@ -127,8 +126,7 @@ public struct MainWindowView: View {
                     editingGroup: viewModel.editingGroup,
                     onClose: { viewModel.closeGroupModal() },
                     onCreated: { newGroup in
-                        viewModel.selectedGroupId = newGroup.id
-                        viewModel.selectedItemId = viewModel.filteredItems(from: storage.items).first?.id
+                        viewModel.selectGroup(newGroup)
                     }
                 )
                 .transition(.scale(scale: 0.95).combined(with: .opacity))
@@ -174,7 +172,7 @@ public struct MainWindowView: View {
         )
         .onAppear {
             if viewModel.selectedItemId == nil {
-                viewModel.selectedItemId = viewModel.filteredItems(from: storage.items).first?.id
+                viewModel.selectedItemId = viewModel.displayedItems.first?.id
             }
             viewModel.refreshAccessibility()
             registerKeyHandler? { event in
@@ -266,13 +264,9 @@ public struct MainWindowView: View {
     
     @ViewBuilder
     private func topBar(currentItems: [ClipItem]) -> some View {
-        let metrics = viewModel.summaryMetrics(for: storage.items, groups: storage.groups)
         VStack(spacing: 10) {
             HStack(spacing: 10) {
                 LiquidSearchBar(text: $viewModel.searchText, focusTrigger: viewModel.panelShowToken)
-                    .onChange(of: viewModel.searchText) {
-                        viewModel.selectedItemId = viewModel.filteredItems(from: storage.items).first?.id
-                    }
                 
                 GlassIconButton(icon: "gearshape", size: 30) {
                     viewModel.showSettings = true
@@ -299,7 +293,7 @@ public struct MainWindowView: View {
                         .padding(.horizontal, 2)
                     
                     ForEach(storage.groups) { group in
-                        groupPill(group, count: metrics.groupCounts[group.id, default: 0])
+                        groupPill(group, count: viewModel.groupCounts[group.id, default: 0])
                     }
                     
                     Button(action: { viewModel.openNewGroupModal() }) {
@@ -473,7 +467,7 @@ public struct MainWindowView: View {
             Button(role: .destructive, action: {
                 storage.deleteGroup(id: group.id)
                 if viewModel.selectedGroupId == group.id {
-                    viewModel.selectedGroupId = nil
+                    viewModel.clearGroupSelection()
                 }
             }) {
                 Label("删除分组 \"\(group.name)\"", systemImage: "trash")

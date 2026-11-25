@@ -1,11 +1,12 @@
 /**
- * [INPUT]: 依赖 StorageManager、AppSettings、PasteSimulator 与 SoundManager
- * [OUTPUT]: 提供主窗口状态与交互控制器 MainWindowViewModel，封装筛选、FTS5 检索、快捷键分发与粘贴调度
+ * [INPUT]: 依赖 Combine、StorageManager、AppSettings、PasteSimulator 与 SoundManager
+ * [OUTPUT]: 提供主窗口状态与交互控制器 MainWindowViewModel，封装防抖异步 FTS5 检索、缓存派生列表与汇总指标、快捷键分发与粘贴调度
  * [POS]: MVVM 协调层，解耦 MainWindowView 的 UI 渲染与业务逻辑
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
 
 import Foundation
+import Combine
 import SwiftUI
 import AppKit
 
@@ -24,8 +25,139 @@ public final class MainWindowViewModel: ObservableObject {
     @Published public var panelShowToken: Int = 0
     @Published public var isAccessibilityGranted: Bool = PasteSimulator.shared.isAccessibilityTrusted
     @Published public var dismissedAccessibilityBanner: Bool = false
+
+    @Published public private(set) var displayedItems: [ClipItem] = []
+    @Published public private(set) var groupCounts: [UUID: Int] = [:]
+    @Published public private(set) var pinnedCount: Int = 0
+    @Published public private(set) var groupMap: [UUID: ClipGroup] = [:]
+
+    private var cancellables = Set<AnyCancellable>()
+    private var searchTask: Task<Void, Never>?
+    private var searchGeneration: UInt64 = 0
+    private var lastMatchedSearchIds: Set<UUID>? = nil
     
-    public init() {}
+    public init() {
+        let storage = StorageManager.shared
+        recomputeSummaryMetrics(from: storage.items, groups: storage.groups)
+        applyLocalFilter(from: storage.items, matchedIds: nil, resetSelection: true)
+
+        storage.$items
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newItems in
+                guard let self = self else { return }
+                self.recomputeSummaryMetrics(from: newItems, groups: StorageManager.shared.groups)
+                self.refreshForDataChange(items: newItems)
+            }
+            .store(in: &cancellables)
+
+        storage.$groups
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newGroups in
+                guard let self = self else { return }
+                self.recomputeSummaryMetrics(from: StorageManager.shared.items, groups: newGroups)
+            }
+            .store(in: &cancellables)
+
+        $searchText
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] newQuery in
+                self?.handleSearchTextChanged(newQuery)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func recomputeSummaryMetrics(from items: [ClipItem], groups: [ClipGroup]) {
+        let metrics = summaryMetrics(for: items, groups: groups)
+        self.groupCounts = metrics.groupCounts
+        self.pinnedCount = metrics.pinnedCount
+        self.groupMap = metrics.groupMap
+    }
+
+    private func applyLocalFilter(
+        from items: [ClipItem],
+        matchedIds: Set<UUID>?,
+        resetSelection: Bool
+    ) {
+        var list = items
+        if let gId = selectedGroupId {
+            list = list.filter { $0.groupId == gId }
+        } else {
+            switch selectedFilter {
+            case .all:
+                break
+            case .text:
+                list = list.filter { $0.type == .text }
+            case .image:
+                list = list.filter { $0.type == .image }
+            case .color:
+                list = list.filter { $0.type == .color }
+            case .url:
+                list = list.filter { $0.type == .url }
+            case .file:
+                list = list.filter { $0.type == .file }
+            case .pinned:
+                list = list.filter { $0.isPinned }
+            }
+        }
+        if let matchedIds = matchedIds {
+            list = list.filter { matchedIds.contains($0.id) }
+        }
+        displayedItems = list
+        if resetSelection {
+            selectedItemId = list.first?.id
+        } else if let currentId = selectedItemId, !list.contains(where: { $0.id == currentId }) {
+            selectedItemId = list.first?.id
+        } else if selectedItemId == nil {
+            selectedItemId = list.first?.id
+        }
+    }
+
+    private func handleSearchTextChanged(_ newQuery: String) {
+        let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchTask?.cancel()
+        searchGeneration &+= 1
+        let generation = searchGeneration
+
+        if trimmed.isEmpty {
+            lastMatchedSearchIds = nil
+            searchTask = Task { @MainActor [weak self] in
+                guard let self = self, self.searchGeneration == generation else { return }
+                self.applyLocalFilter(from: StorageManager.shared.items, matchedIds: nil, resetSelection: true)
+            }
+            return
+        }
+
+        searchTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            let ids = await StorageManager.shared.searchMatchingIdsAsync(query: trimmed)
+            guard !Task.isCancelled, let self = self, self.searchGeneration == generation else { return }
+            self.lastMatchedSearchIds = ids
+            self.applyLocalFilter(from: StorageManager.shared.items, matchedIds: ids, resetSelection: true)
+        }
+    }
+
+    private func refreshForDataChange(items: [ClipItem]) {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            lastMatchedSearchIds = nil
+            applyLocalFilter(from: items, matchedIds: nil, resetSelection: false)
+            return
+        }
+
+        searchTask?.cancel()
+        searchGeneration &+= 1
+        let generation = searchGeneration
+        searchTask = Task { @MainActor [weak self] in
+            let ids = await StorageManager.shared.searchMatchingIdsAsync(query: trimmed)
+            guard !Task.isCancelled, let self = self, self.searchGeneration == generation else { return }
+            self.lastMatchedSearchIds = ids
+            self.applyLocalFilter(from: StorageManager.shared.items, matchedIds: ids, resetSelection: false)
+        }
+    }
     
     public func filteredItems(
         from items: [ClipItem],
@@ -91,17 +223,47 @@ public final class MainWindowViewModel: ObservableObject {
     public func selectFilter(_ filter: ClipFilter) {
         selectedFilter = filter
         selectedGroupId = nil
-        let newItems = filteredItems(from: StorageManager.shared.items, filter: filter, groupId: .some(nil))
-        selectedItemId = newItems.first?.id
-        keyboardScrollTarget = newItems.first?.id
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyLocalFilter(
+            from: StorageManager.shared.items,
+            matchedIds: trimmed.isEmpty ? nil : lastMatchedSearchIds,
+            resetSelection: true
+        )
+        keyboardScrollTarget = selectedItemId
     }
     
     public func toggleGroupSelection(_ group: ClipGroup) {
         let nextGroupId = (selectedGroupId == group.id) ? nil : group.id
         selectedGroupId = nextGroupId
-        let newItems = filteredItems(from: StorageManager.shared.items, groupId: .some(nextGroupId))
-        selectedItemId = newItems.first?.id
-        keyboardScrollTarget = newItems.first?.id
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyLocalFilter(
+            from: StorageManager.shared.items,
+            matchedIds: trimmed.isEmpty ? nil : lastMatchedSearchIds,
+            resetSelection: true
+        )
+        keyboardScrollTarget = selectedItemId
+    }
+
+    public func selectGroup(_ group: ClipGroup) {
+        selectedGroupId = group.id
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyLocalFilter(
+            from: StorageManager.shared.items,
+            matchedIds: trimmed.isEmpty ? nil : lastMatchedSearchIds,
+            resetSelection: true
+        )
+        keyboardScrollTarget = selectedItemId
+    }
+
+    public func clearGroupSelection() {
+        selectedGroupId = nil
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyLocalFilter(
+            from: StorageManager.shared.items,
+            matchedIds: trimmed.isEmpty ? nil : lastMatchedSearchIds,
+            resetSelection: true
+        )
+        keyboardScrollTarget = selectedItemId
     }
     
     public func openNewGroupModal() {
@@ -211,7 +373,7 @@ public final class MainWindowViewModel: ObservableObject {
             return false
         }
         
-        let items = filteredItems(from: StorageManager.shared.items)
+        let items = displayedItems
         guard !items.isEmpty else { return false }
         
         let selectedItem = currentSelectedItem(in: items)
@@ -262,9 +424,11 @@ public final class MainWindowViewModel: ObservableObject {
             return true
         }
         
-        // Number Keys 1~9: Direct paste when search is empty
+        // Number Keys 1~9: Direct paste when search is empty (ignore Cmd/Option/Ctrl combos)
         if searchText.isEmpty,
            !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.option),
+           !event.modifierFlags.contains(.control),
            let char = event.charactersIgnoringModifiers,
            let num = Int(char),
            num >= 1 && num <= 9 {

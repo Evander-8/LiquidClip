@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 依赖 SwiftUI、AppKit、Carbon、AppSettings 与 HotkeyManager
- * [OUTPUT]: 提供设置界面基础组件：SettingsIconBadge、SettingsGroupCard、SettingsToggleRow、SettingsRowDivider 与 HotkeyRecorderPill
+ * [OUTPUT]: 提供设置界面基础组件：SettingsIconBadge、SettingsGroupCard、SettingsToggleRow、SettingsRowDivider 与带冲突提示的 HotkeyRecorderPill
  * [POS]: Views/Settings 共享原语库，统一各设置子页的 macOS 液态玻璃卡片与控件视觉规范
  * [PROTOCOL]: Update this header on change, then check GEMINI.md
  */
@@ -152,6 +152,7 @@ public struct HotkeyRecorderPill: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var isRecording = false
     @State private var monitor: Any?
+    @State private var conflictMessage: String? = nil
     
     public init() {}
     
@@ -160,57 +161,85 @@ public struct HotkeyRecorderPill: View {
     }
     
     public var body: some View {
-        HStack(spacing: 6) {
-            if !isDefaultHotkey && !isRecording {
-                Button("恢复默认") {
-                    settings.setHotkey(keyCode: 9, carbonModifiers: UInt32(cmdKey | shiftKey), display: "⌘ ⇧ V")
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                if !isDefaultHotkey && !isRecording {
+                    Button("恢复默认") {
+                        applyHotkey(keyCode: 9, carbonModifiers: UInt32(cmdKey | shiftKey), display: "⌘ ⇧ V")
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .buttonStyle(.plain)
+                    .help("恢复默认快捷键 ⌘ ⇧ V")
                 }
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
+                
+                Button(action: {
+                    if isRecording {
+                        stopRecording()
+                    } else {
+                        startRecording()
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        if isRecording {
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 6, height: 6)
+                            Text("按下新快捷键… (Esc 取消)")
+                                .font(.system(size: 11, weight: .semibold))
+                        } else {
+                            Text(settings.hotkeyDisplay)
+                                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                            Text("点击修改")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .foregroundColor(isRecording ? .white : .primary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(isRecording ? Color.accentColor : Color.primary.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(isRecording ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.14), lineWidth: 0.6)
+                    )
+                }
                 .buttonStyle(.plain)
-                .help("恢复默认快捷键 ⌘ ⇧ V")
             }
             
-            Button(action: {
-                if isRecording {
-                    stopRecording()
-                } else {
-                    startRecording()
+            if let message = conflictMessage {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text(message)
+                        .font(.system(size: 10, weight: .medium))
                 }
-            }) {
-                HStack(spacing: 5) {
-                    if isRecording {
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: 6, height: 6)
-                        Text("按下新快捷键… (Esc 取消)")
-                            .font(.system(size: 11, weight: .semibold))
-                    } else {
-                        Text(settings.hotkeyDisplay)
-                            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                        Text("点击修改")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .foregroundColor(isRecording ? .white : .primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(isRecording ? Color.accentColor : Color.primary.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(isRecording ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.14), lineWidth: 0.6)
-                )
+                .foregroundColor(.orange)
+                .transition(.opacity)
             }
-            .buttonStyle(.plain)
         }
         .onDisappear { stopRecording() }
     }
     
+    private func applyHotkey(keyCode: UInt32, carbonModifiers: UInt32, display: String) {
+        if settings.setHotkey(keyCode: keyCode, carbonModifiers: carbonModifiers, display: display) {
+            conflictMessage = nil
+        } else {
+            let msg = "快捷键 \(display) 已被占用，已保留原快捷键"
+            conflictMessage = msg
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                if conflictMessage == msg {
+                    conflictMessage = nil
+                }
+            }
+        }
+    }
+    
     private func startRecording() {
+        conflictMessage = nil
         isRecording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 {
@@ -227,7 +256,7 @@ public struct HotkeyRecorderPill: View {
             }
             let keyLabel = HotkeyManager.keyDisplay(forVirtualKey: UInt32(event.keyCode))
             let display = HotkeyManager.modifierDisplay(from: carbonMods) + " " + keyLabel
-            settings.setHotkey(keyCode: UInt32(event.keyCode), carbonModifiers: carbonMods, display: display)
+            applyHotkey(keyCode: UInt32(event.keyCode), carbonModifiers: carbonMods, display: display)
             stopRecording()
             return nil
         }
